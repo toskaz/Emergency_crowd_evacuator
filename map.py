@@ -2,10 +2,10 @@ import pygame
 import sys
 import cv2
 
-image_path = "regular-office-floor-plan.png"
+image_path = "plan_black_white.jpg"
 block_size = 25
-drawing_size = 15
-acceptance_threshold = 0.35
+drawing_size = 8
+acceptance_threshold = 0.40
 
 def generate_map_matrix(image_path):
     img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -30,18 +30,41 @@ def generate_map_matrix(image_path):
         map_matrix.append(row)
     return map_matrix
 
+# if left mouse button (1) we add a wall
+# if right mouse button (3) we remove the wall
+def handle_map_editor(map_matrix, mouse_pos, button, drawing_size):
+    pos_x, pos_y = mouse_pos
+
+    grid_x = pos_x // drawing_size
+    grid_y = pos_y // drawing_size
+
+    max_y = len(map_matrix)
+    max_x = len(map_matrix[0])
+
+    if 0 <= grid_y < max_y and 0 <= grid_x < max_x: 
+        if button == 1:
+            map_matrix[grid_y][grid_x] = 1
+        elif button == 3:
+            map_matrix[grid_y][grid_x] = 0
+
+
 def main():
     map_matrix = generate_map_matrix(image_path)
 
     pygame.init()
 
-    screen = pygame.display.set_mode()
+    SCREEN_WIDTH = len(map_matrix[0]) * drawing_size
+    SCREEN_HEIGHT = len(map_matrix) * drawing_size
+
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
 
     working = True
     while working:
-        for event in pygame.event.get():
+        for event in pygame.event.get():   
             if event.type == pygame.QUIT:
                 working = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                handle_map_editor(map_matrix, event.pos, event.button, drawing_size)
 
         screen.fill((0, 0, 0)) 
 
