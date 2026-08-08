@@ -47,6 +47,23 @@ def handle_map_editor(map_matrix, mouse_pos, button, drawing_size):
         elif button == 3:
             map_matrix[grid_y][grid_x] = 0
 
+def draw_map(screen, map_matrix, drawing_size):
+    screen.fill((0, 0, 0))
+    for y, row in enumerate(map_matrix):
+        for x, value in enumerate(row):
+            pos_x = x * drawing_size
+            pos_y = y * drawing_size
+
+            if value == 1:
+                color = (40, 40, 40)
+            else:
+                color = (255, 255, 255)
+
+            # Draw the cell
+            pygame.draw.rect(screen, color, (pos_x, pos_y, drawing_size, drawing_size))
+
+            # Draw the grid line
+            pygame.draw.rect(screen, (200, 200, 200), (pos_x, pos_y, drawing_size, drawing_size), 1)
 
 def main():
     map_matrix = generate_map_matrix(image_path)
@@ -66,20 +83,7 @@ def main():
             if event.type == pygame.MOUSEBUTTONDOWN:
                 handle_map_editor(map_matrix, event.pos, event.button, drawing_size)
 
-        screen.fill((0, 0, 0)) 
-
-        for y, row in enumerate(map_matrix):
-            for x, value in enumerate(row):
-                pos_x = x * drawing_size
-                pos_y = y * drawing_size
-
-                if value == 1:
-                    color = (40, 40, 40) 
-                else:
-                    color = (255, 255, 255) 
-
-                pygame.draw.rect(screen, color, (pos_x, pos_y, drawing_size, drawing_size))
-                pygame.draw.rect(screen, (200, 200, 200), (pos_x, pos_y, drawing_size, drawing_size), 1)
+        draw_map(screen, map_matrix, drawing_size)
         
         pygame.display.flip()
 
