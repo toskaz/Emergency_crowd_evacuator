@@ -30,9 +30,41 @@ def generate_map_matrix(image_path):
         map_matrix.append(row)
     return map_matrix
 
+def handle_input(map_matrix, drawing_size, mode):
+    for event in pygame.event.get():
+
+        # Close window
+        if event.type == pygame.QUIT:
+            return False, mode
+
+        # Keyboard input
+        if event.type == pygame.KEYDOWN:
+
+            if event.key == pygame.K_1:
+                mode = 1
+
+            elif event.key == pygame.K_2:
+                mode = 2
+
+            elif event.key == pygame.K_3:
+                mode = 3
+
+        # Mouse input
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            handle_map_editor(
+                map_matrix,
+                event.pos,
+                event.button,
+                drawing_size,
+                mode
+            )
+
+    return True, mode
+
+
 # if left mouse button (1) we add a wall
 # if right mouse button (3) we remove the wall
-def handle_map_editor(map_matrix, mouse_pos, button, drawing_size):
+def handle_map_editor(map_matrix, mouse_pos, button, drawing_size, mode):
     pos_x, pos_y = mouse_pos
 
     grid_x = pos_x // drawing_size
@@ -41,9 +73,13 @@ def handle_map_editor(map_matrix, mouse_pos, button, drawing_size):
     max_y = len(map_matrix)
     max_x = len(map_matrix[0])
 
-    if 0 <= grid_y < max_y and 0 <= grid_x < max_x: 
+    if 0 <= grid_y < max_y and 0 <= grid_x < max_x:
+
+        # LMB = place current mode
         if button == 1:
-            map_matrix[grid_y][grid_x] = 1
+            map_matrix[grid_y][grid_x] = mode
+
+        # RMB = erase
         elif button == 3:
             map_matrix[grid_y][grid_x] = 0
 
@@ -54,10 +90,17 @@ def draw_map(screen, map_matrix, drawing_size):
             pos_x = x * drawing_size
             pos_y = y * drawing_size
 
-            if value == 1:
-                color = (40, 40, 40)
-            else:
-                color = (255, 255, 255)
+            if value == 0:
+                color = (255, 255, 255)    # empty
+
+            elif value == 1:
+                color = (40, 40, 40)       # wall
+
+            elif value == 2:
+                color = (0, 100, 255)      # blue escapist
+
+            elif value == 3:
+                color = (0, 255, 0)        # green exit
 
             # Draw the cell
             pygame.draw.rect(screen, color, (pos_x, pos_y, drawing_size, drawing_size))
@@ -74,14 +117,10 @@ def main():
     SCREEN_HEIGHT = len(map_matrix) * drawing_size
 
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-
+    mode = 1
     working = True
     while working:
-        for event in pygame.event.get():   
-            if event.type == pygame.QUIT:
-                working = False
-            if event.type == pygame.MOUSEBUTTONDOWN:
-                handle_map_editor(map_matrix, event.pos, event.button, drawing_size)
+        working, mode = handle_input(map_matrix, drawing_size, mode)
 
         draw_map(screen, map_matrix, drawing_size)
         
