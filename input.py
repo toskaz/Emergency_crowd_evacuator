@@ -16,8 +16,8 @@ def handle_input(window, map_matrix, drawing_size, selected_cell_type, show_grid
             if event.key == pygame.K_1:
                 selected_cell_type = CellType.WALL
 
-            elif event.key == pygame.K_2:
-                selected_cell_type = CellType.EVACUEE
+            #elif event.key == pygame.K_2:
+            #    selected_cell_type = CellType.EVACUEE
 
             elif event.key == pygame.K_3:
                 selected_cell_type = CellType.EXIT

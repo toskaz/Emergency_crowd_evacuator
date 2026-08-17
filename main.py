@@ -4,6 +4,7 @@ from config import *
 from input import handle_input
 from renderer import *
 from window import Window
+from evacuee import Evacuee
 
 def main():
     map_matrix = generate_map_matrix(image_path)
@@ -12,6 +13,8 @@ def main():
 
     selected_cell_type = CellType.WALL
     show_grid = True
+
+    evacuees = []
 
     while window.is_open:
         selected_cell_type, show_grid = handle_input(

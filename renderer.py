@@ -5,7 +5,7 @@ import pygame
 CELL_COLORS = {
     CellType.EMPTY: Color.EMPTY.value,
     CellType.WALL: Color.WALL.value,
-    CellType.EVACUEE: Color.EVACUEE.value,
+    #CellType.EVACUEE: Color.EVACUEE.value,
     CellType.EXIT: Color.EXIT.value,
 }
 
@@ -39,7 +39,7 @@ def draw_map(screen, map_matrix, drawing_size, show_grid):
 def draw_ui(screen, font, selected_cell_type):
     tool_names = {
         CellType.WALL: "WALL",
-        CellType.EVACUEE: "EVACUEE",
+        #CellType.EVACUEE: "EVACUEE",
         CellType.EXIT: "EXIT",
     }
 
