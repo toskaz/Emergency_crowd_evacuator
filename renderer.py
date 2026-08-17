@@ -71,3 +71,7 @@ def draw_ui(screen, font, selected_tool):
     )
 
     screen.blit(text, text_rect)
+
+def draw_evacuees(screen, evacuees):
+    for evacuee in evacuees:
+        pygame.draw.circle(screen, Color.EVACUEE.value, (int(evacuee.position.x), int(evacuee.position.y)),4) #cast to int required, original position still stored

@@ -1,6 +1,6 @@
 import pygame
 
-from renderer import draw_map, draw_ui
+from renderer import draw_map, draw_ui, draw_evacuees
 
 
 class Window:
@@ -16,7 +16,7 @@ class Window:
         self.font = pygame.font.Font(None, 24)
         self.is_open = True
 
-    def draw(self, grid, drawing_size, selected_cell_type, show_grid):
+    def draw(self, grid, evacuees, drawing_size, selected_cell_type, show_grid):
         draw_map(
             self.screen,
             grid,
@@ -29,6 +29,8 @@ class Window:
             self.font,
             selected_cell_type
         )
+
+        draw_evacuees(self.screen, evacuees)
 
         pygame.display.flip()
 

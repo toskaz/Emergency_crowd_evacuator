@@ -3,7 +3,7 @@ from map.cell import CellType
 from editor.editor import handle_map_editor
 from editor.tool import Tool
 
-def handle_input(window, evacuees, map_matrix, drawing_size, selected_tool, show_grid):
+def handle_input(window, evacuees, map_matrix, drawing_size, selected_tool, show_grid, simulation_running):
     for event in pygame.event.get():
 
         # Close window
@@ -26,6 +26,9 @@ def handle_input(window, evacuees, map_matrix, drawing_size, selected_tool, show
             elif event.key == pygame.K_g:
                 show_grid = not show_grid
 
+            elif event.key == pygame.K_p:
+                simulation_running = not simulation_running
+
         # Mouse input
         if event.type == pygame.MOUSEBUTTONDOWN:
             handle_map_editor(
@@ -37,4 +40,4 @@ def handle_input(window, evacuees, map_matrix, drawing_size, selected_tool, show
                 selected_tool
             )
 
-    return selected_tool, show_grid
+    return selected_tool, show_grid, simulation_running
