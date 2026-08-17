@@ -14,6 +14,7 @@ class Window:
         self.screen = pygame.display.set_mode((screen_width, screen_height))
 
         self.font = pygame.font.Font(None, 24)
+        self.is_open = True
 
     def draw(self, map_matrix, drawing_size, selected_cell_type, show_grid):
         draw_map(
@@ -32,4 +33,5 @@ class Window:
         pygame.display.flip()
 
     def close(self):
+        self.is_open = False
         pygame.quit()

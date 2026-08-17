@@ -1,4 +1,3 @@
-import pygame
 from map.cell import CellType
 from map.image_loader import generate_map_matrix
 from config import *
@@ -14,10 +13,9 @@ def main():
     selected_cell_type = CellType.WALL
     show_grid = True
 
-    working = True
-
-    while working:
-        working, selected_cell_type, show_grid = handle_input(
+    while window.is_open:
+        selected_cell_type, show_grid = handle_input(
+            window,
             map_matrix,
             drawing_size,
             selected_cell_type,
@@ -25,8 +23,6 @@ def main():
         )
 
         window.draw(map_matrix, drawing_size, selected_cell_type, show_grid)
-        
-    window.close()
 
 if __name__ == "__main__":
     main()
