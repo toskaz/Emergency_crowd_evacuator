@@ -1,15 +1,8 @@
 import pygame
 import sys
 import cv2
-from enum import IntEnum, Enum
-
-
-class CellType(IntEnum):
-    EMPTY = 0
-    WALL = 1
-    EVACUEE = 2
-    EXIT = 3
-
+from enum import Enum
+from map.cell import CellType
 
 class Color(Enum):
     EMPTY = (255, 255, 255)
