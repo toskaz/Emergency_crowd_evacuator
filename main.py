@@ -5,11 +5,12 @@ from input import handle_input
 from renderer import *
 from window import Window
 from evacuee import Evacuee
+from grid import Grid
 
 def main():
-    map_matrix = generate_map_matrix(image_path)
+    grid = Grid.from_image(image_path)
 
-    window = Window(map_matrix,drawing_size)
+    window = Window(grid,drawing_size)
 
     selected_cell_type = CellType.WALL
     show_grid = True
@@ -19,13 +20,13 @@ def main():
     while window.is_open:
         selected_cell_type, show_grid = handle_input(
             window,
-            map_matrix,
+            grid,
             drawing_size,
             selected_cell_type,
             show_grid
         )
 
-        window.draw(map_matrix, drawing_size, selected_cell_type, show_grid)
+        window.draw(grid, drawing_size, selected_cell_type, show_grid)
 
 if __name__ == "__main__":
     main()

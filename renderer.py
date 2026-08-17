@@ -9,11 +9,13 @@ CELL_COLORS = {
     CellType.EXIT: Color.EXIT.value,
 }
 
-def draw_map(screen, map_matrix, drawing_size, show_grid):
+def draw_map(screen, grid, drawing_size, show_grid):
     screen.fill(Color.BACKGROUND.value)
 
-    for y, row in enumerate(map_matrix):
-        for x, value in enumerate(row):
+    for y in range(grid.height):
+        for x in range(grid.width):
+            value = grid.get(x, y)
+
             pos_x = x * drawing_size
             pos_y = y * drawing_size
 
