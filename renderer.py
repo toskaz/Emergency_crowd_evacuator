@@ -1,13 +1,22 @@
 from map.cell import CellType
 from colors import Color
 import pygame
+from editor.tool import Tool
+
 
 CELL_COLORS = {
     CellType.EMPTY: Color.EMPTY.value,
     CellType.WALL: Color.WALL.value,
-    #CellType.EVACUEE: Color.EVACUEE.value,
     CellType.EXIT: Color.EXIT.value,
 }
+
+
+TOOL_COLORS = {
+    Tool.WALL: Color.WALL.value,
+    Tool.EVACUEE: Color.EVACUEE.value,
+    Tool.EXIT: Color.EXIT.value,
+}
+
 
 def draw_map(screen, grid, drawing_size, show_grid):
     screen.fill(Color.BACKGROUND.value)
@@ -38,15 +47,15 @@ def draw_map(screen, grid, drawing_size, show_grid):
                 )
 
 
-def draw_ui(screen, font, selected_cell_type):
+def draw_ui(screen, font, selected_tool):
     tool_names = {
-        CellType.WALL: "WALL",
-        #CellType.EVACUEE: "EVACUEE",
-        CellType.EXIT: "EXIT",
+        Tool.WALL: "WALL",
+        Tool.EVACUEE: "EVACUEE",
+        Tool.EXIT: "EXIT",
     }
 
-    tool_name = tool_names[selected_cell_type]
-    tool_color = CELL_COLORS[selected_cell_type]
+    tool_name = tool_names[selected_tool]
+    tool_color = TOOL_COLORS[selected_tool]
 
     text = font.render(
         f"Tool: {tool_name}",
