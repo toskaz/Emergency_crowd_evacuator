@@ -1,17 +1,8 @@
 import pygame
 import sys
 import cv2
-from enum import Enum
 from map.cell import CellType
-
-class Color(Enum):
-    EMPTY = (255, 255, 255)
-    WALL = (40, 40, 40)
-    EVACUEE = (0, 100, 255)
-    EXIT = (0, 255, 0)
-    GRID = (200, 200, 200)
-    BACKGROUND = (0, 0, 0)
-
+from colors import Color
 
 CELL_COLORS = {
     CellType.EMPTY: Color.EMPTY.value,
