@@ -81,12 +81,12 @@ def generate_map_matrix(image_path):
     return map_matrix
 
 
-def handle_input(map_matrix, drawing_size, selected_cell_type):
+def handle_input(map_matrix, drawing_size, selected_cell_type, show_grid):
     for event in pygame.event.get():
 
         # Close window
         if event.type == pygame.QUIT:
-            return False, selected_cell_type
+            return False, selected_cell_type, show_grid
 
         # Keyboard input
         if event.type == pygame.KEYDOWN:
@@ -100,6 +100,9 @@ def handle_input(map_matrix, drawing_size, selected_cell_type):
             elif event.key == pygame.K_3:
                 selected_cell_type = CellType.EXIT
 
+            elif event.key == pygame.K_g:
+                show_grid = not show_grid
+
         # Mouse input
         if event.type == pygame.MOUSEBUTTONDOWN:
             handle_map_editor(
@@ -110,7 +113,7 @@ def handle_input(map_matrix, drawing_size, selected_cell_type):
                 selected_cell_type
             )
 
-    return True, selected_cell_type
+    return True, selected_cell_type, show_grid
 
 
 def handle_map_editor(
@@ -139,7 +142,7 @@ def handle_map_editor(
             map_matrix[grid_y][grid_x] = CellType.EMPTY
 
 
-def draw_map(screen, map_matrix, drawing_size):
+def draw_map(screen, map_matrix, drawing_size, show_grid):
     screen.fill(Color.BACKGROUND.value)
 
     for y, row in enumerate(map_matrix):
@@ -157,12 +160,13 @@ def draw_map(screen, map_matrix, drawing_size):
             )
 
             # Draw the grid line
-            pygame.draw.rect(
-                screen,
-                Color.GRID.value,
-                (pos_x, pos_y, drawing_size, drawing_size),
-                1
-            )
+            if show_grid:
+                pygame.draw.rect(
+                    screen,
+                    Color.GRID.value,
+                    (pos_x, pos_y, drawing_size, drawing_size),
+                    1
+                )
 
 
 def draw_ui(screen, font, selected_cell_type):
@@ -190,14 +194,17 @@ def draw_ui(screen, font, selected_cell_type):
 
     screen.blit(text, text_rect)
 
+
 def exit():
     pygame.quit()
 
-def draw(screen, font, map_matrix, drawing_size, selected_cell_type):
+
+def draw(screen, font, map_matrix, drawing_size, selected_cell_type, show_grid):
     draw_map(
         screen,
         map_matrix,
-        drawing_size
+        drawing_size,
+        show_grid
     )
 
     draw_ui(
@@ -218,14 +225,16 @@ def main():
     )
 
     selected_cell_type = CellType.WALL
+    show_grid = True
 
     working = True
 
     while working:
-        working, selected_cell_type = handle_input(
+        working, selected_cell_type, show_grid = handle_input(
             map_matrix,
             drawing_size,
-            selected_cell_type
+            selected_cell_type,
+            show_grid
         )
 
         draw(
@@ -233,7 +242,8 @@ def main():
             font,
             map_matrix,
             drawing_size,
-            selected_cell_type
+            selected_cell_type,
+            show_grid
         )
     exit()
 
