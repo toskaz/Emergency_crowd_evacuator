@@ -3,23 +3,36 @@ from editor.tool import Tool
 from evacuee import Evacuee
 from coordinates import pixel_to_grid
 
-def handle_map_editor(grid, evacuees, mouse_pos, button, drawing_size, selected_tool):
+def handle_map_editor(map_grid, evacuees, occupancy_grid, mouse_pos, button, drawing_size, selected_tool):
     pos_x, pos_y = mouse_pos
 
     grid_x, grid_y = pixel_to_grid(pos_x, pos_y, drawing_size)
 
+    if not map_grid.in_bounds(grid_x, grid_y):
+        return
 
     # LMB = place selected cell type
     if button == 1:
         if selected_tool == Tool.WALL:
-            grid.set(grid_x, grid_y, CellType.WALL)
+            map_grid.set(grid_x, grid_y, CellType.WALL)
 
         elif selected_tool == Tool.EXIT:
-            grid.set(grid_x, grid_y, CellType.EXIT)
+            map_grid.set(grid_x, grid_y, CellType.EXIT)
 
         elif selected_tool == Tool.EVACUEE:
-            evacuees.append(Evacuee(grid_x,grid_y))
+
+            if occupancy_grid.get(grid_x, grid_y) is None:
+                evacuee = Evacuee(grid_x, grid_y)
+
+                evacuees.append(evacuee)
+
+                occupancy_grid.set(
+                    grid_x,
+                    grid_y,
+                    evacuee
+                )
+                map_grid.set(grid_x, grid_y, CellType.EMPTY)
 
     # RMB = erase
     elif button == 3:
-        grid.set(grid_x,grid_y, CellType.EMPTY)
+        map_grid.set(grid_x,grid_y, CellType.EMPTY)

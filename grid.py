@@ -4,14 +4,23 @@ from config import block_size, acceptance_threshold
 
 class Grid:
 
-    def __init__(self, width, height):
+    def __init__(self, width, height, default=None):
         self.width = width
         self.height = height
 
         self.cells = [
-            [CellType.EMPTY for _ in range(width)]
+            [default for _ in range(width)]
             for _ in range(height)
         ]
+
+    def in_bounds(self, x, y):
+        return 0 <= x < self.width and 0 <= y < self.height
+
+    def get(self, x, y):
+        return self.cells[y][x]
+
+    def set(self, x, y, value):
+        self.cells[y][x] = value
 
     @classmethod
     def from_image(cls, image_path):
@@ -29,7 +38,7 @@ class Grid:
         grid_width = (width + block_size - 1) // block_size
         grid_height = (height + block_size - 1) // block_size
 
-        grid = cls(grid_width,grid_height)
+        grid = cls(grid_width,grid_height, CellType.EMPTY)
 
         for y in range(grid_height):
             for x in range(grid_width):
@@ -45,12 +54,3 @@ class Grid:
                     grid.set(x, y, CellType.WALL)
 
         return grid
-
-    def get(self, x, y):
-        return self.cells[y][x]
-
-    def set(self, x, y, cell_type):
-        self.cells[y][x] = cell_type
-
-    def in_bounds(self, x, y):
-        return 0 <= x < self.width and 0 <= y < self.height

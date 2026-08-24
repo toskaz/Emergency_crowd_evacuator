@@ -17,35 +17,39 @@ ACTION_DIRECTIONS = {
     Action.RIGHT: (1, 0),
 }
 
-def update_evacuees(evacuees, grid, action):
+def update_evacuees(evacuees, grid, occupancy, action):
 
     dx, dy = ACTION_DIRECTIONS[action]
 
     for evacuee in evacuees:
 
-        new_x = evacuee.grid_x + dx
-        new_y = evacuee.grid_y + dy
+        old_x = evacuee.grid_x
+        old_y = evacuee.grid_y
+
+        new_x = old_x + dx
+        new_y = old_y + dy
 
         if not grid.in_bounds(new_x, new_y):
             continue
 
-        cell = grid.get(new_x, new_y)
-
-        if cell == CellType.WALL:
+        if grid.get(new_x, new_y) == CellType.WALL:
             continue
+
+        if occupancy.get(new_x, new_y) is not None:
+            continue
+
+        occupancy.set(old_x, old_y, None)
+        occupancy.set(new_x, new_y, evacuee)
 
         evacuee.grid_x = new_x
         evacuee.grid_y = new_y
 
-    evacuees[:] = [
-        evacuee
-        for evacuee in evacuees
-        if not touching_exit(evacuee, grid)
-    ]
 def main():
-    grid = Grid.from_image(image_path)
+    map_grid = Grid.from_image(image_path)
 
-    window = Window(grid,drawing_size)
+    occupancy_grid = Grid(map_grid.width, map_grid.height, None)
+
+    window = Window(map_grid,drawing_size)
 
     selected_tool = Tool.WALL
     show_grid = True
@@ -58,7 +62,8 @@ def main():
         selected_tool, show_grid, simulation_running, action = handle_input(
             window,
             evacuees,
-            grid,
+            map_grid,
+            occupancy_grid,
             drawing_size,
             selected_tool,
             show_grid,
@@ -69,11 +74,12 @@ def main():
         if simulation_running:
             update_evacuees(
                 evacuees,
-                grid,
+                map_grid,
+                occupancy_grid,
                 action
             )
 
-        window.draw(grid, evacuees, drawing_size, selected_tool, show_grid)
+        window.draw(map_grid, evacuees, drawing_size, selected_tool, show_grid)
 
 if __name__ == "__main__":
     main()

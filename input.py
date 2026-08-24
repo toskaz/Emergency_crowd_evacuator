@@ -3,7 +3,7 @@ from editor.editor import handle_map_editor
 from editor.tool import Tool
 from action import Action
 
-def handle_input(window, evacuees, map_matrix, drawing_size, selected_tool, show_grid, simulation_running):
+def handle_input(window, evacuees, map_grid, occupancy_grid, drawing_size, selected_tool, show_grid, simulation_running):
     action = Action.STAY
     for event in pygame.event.get():
 
@@ -46,8 +46,9 @@ def handle_input(window, evacuees, map_matrix, drawing_size, selected_tool, show
         # Mouse input
         if event.type == pygame.MOUSEBUTTONDOWN:
             handle_map_editor(
-                map_matrix,
+                map_grid,
                 evacuees,
+                occupancy_grid,
                 event.pos,
                 event.button,
                 drawing_size,
