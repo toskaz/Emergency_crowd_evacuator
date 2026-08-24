@@ -2,62 +2,46 @@ from config import *
 from input import handle_input
 from renderer import *
 from window import Window
-from evacuee import Evacuee
 from grid import Grid
 from editor.tool import Tool
+from action import Action
 
-def touching_exit(evacuee, grid, drawing_size):
-    grid_x = int(evacuee.position.x // drawing_size)
-    grid_y = int(evacuee.position.y // drawing_size)
+def touching_exit(evacuee, grid):
+    return grid.get(evacuee.grid_x, evacuee.grid_y) == CellType.EXIT
 
-    return grid.get(grid_x, grid_y) == CellType.EXIT
+ACTION_DIRECTIONS = {
+    Action.STAY:  (0, 0),
+    Action.UP:    (0, -1),
+    Action.DOWN:  (0, 1),
+    Action.LEFT:  (-1, 0),
+    Action.RIGHT: (1, 0),
+}
 
-def update_evacuees(evacuees, grid, drawing_size, delta_time):
-    keys = pygame.key.get_pressed()
+def update_evacuees(evacuees, grid, action):
 
-    direction = pygame.Vector2()
-
-    if keys[pygame.K_w]:
-        direction.y -= 1
-
-    if keys[pygame.K_s]:
-        direction.y += 1
-
-    if keys[pygame.K_a]:
-        direction.x -= 1
-
-    if keys[pygame.K_d]:
-        direction.x += 1
-
-    if direction.length_squared() > 0:
-        direction = direction.normalize()
+    dx, dy = ACTION_DIRECTIONS[action]
 
     for evacuee in evacuees:
 
-        movement = direction * evacuee.speed * delta_time
+        new_x = evacuee.grid_x + dx
+        new_y = evacuee.grid_y + dy
 
-        new_position = evacuee.position + movement
+        if not grid.in_bounds(new_x, new_y):
+            continue
 
-        grid_x = int(new_position.x // drawing_size)
-        grid_y = int(new_position.y // drawing_size)
-
-        cell = grid.get(grid_x, grid_y)
+        cell = grid.get(new_x, new_y)
 
         if cell == CellType.WALL:
             continue
 
-        evacuee.position = new_position
+        evacuee.grid_x = new_x
+        evacuee.grid_y = new_y
 
     evacuees[:] = [
         evacuee
         for evacuee in evacuees
-        if not touching_exit(
-            evacuee,
-            grid,
-            drawing_size
-        )
+        if not touching_exit(evacuee, grid)
     ]
-
 def main():
     grid = Grid.from_image(image_path)
 
@@ -71,7 +55,7 @@ def main():
     simulation_running = False
     while window.is_open:
         
-        selected_tool, show_grid, simulation_running = handle_input(
+        selected_tool, show_grid, simulation_running, action = handle_input(
             window,
             evacuees,
             grid,
@@ -81,11 +65,13 @@ def main():
             simulation_running
         )
 
-        delta_time = clock.tick(60) / 1000.0
 
         if simulation_running:
-            update_evacuees(evacuees, grid, drawing_size, delta_time)
-        #temporary for testing
+            update_evacuees(
+                evacuees,
+                grid,
+                action
+            )
 
         window.draw(grid, evacuees, drawing_size, selected_tool, show_grid)
 

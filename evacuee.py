@@ -1,11 +1,5 @@
-import pygame
-
-
 class Evacuee:
 
-    def __init__(self, x, y):
-        self.position = pygame.Vector2(x, y)
-        self.speed = 100
-
-    def move(self, direction, delta_time):
-        self.position += direction * self.speed * delta_time
+    def __init__(self, grid_x, grid_y):
+        self.grid_x = grid_x
+        self.grid_y = grid_y

@@ -51,3 +51,6 @@ class Grid:
 
     def set(self, x, y, cell_type):
         self.cells[y][x] = cell_type
+
+    def in_bounds(self, x, y):
+        return 0 <= x < self.width and 0 <= y < self.height

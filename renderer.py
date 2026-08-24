@@ -2,6 +2,7 @@ from map.cell import CellType
 from colors import Color
 import pygame
 from editor.tool import Tool
+from coordinates import grid_to_pixel, grid_to_pixel_center
 
 
 CELL_COLORS = {
@@ -25,9 +26,7 @@ def draw_map(screen, grid, drawing_size, show_grid):
         for x in range(grid.width):
             value = grid.get(x, y)
 
-            pos_x = x * drawing_size
-            pos_y = y * drawing_size
-
+            pos_x, pos_y = grid_to_pixel(x, y, drawing_size)
             color = CELL_COLORS[value]
 
             # Draw the cell
@@ -72,6 +71,19 @@ def draw_ui(screen, font, selected_tool):
 
     screen.blit(text, text_rect)
 
-def draw_evacuees(screen, evacuees):
+def draw_evacuees(screen, evacuees, drawing_size):
+
     for evacuee in evacuees:
-        pygame.draw.circle(screen, Color.EVACUEE.value, (int(evacuee.position.x), int(evacuee.position.y)),4) #cast to int required, original position still stored
+
+        pixel_x, pixel_y = grid_to_pixel_center(
+            evacuee.grid_x,
+            evacuee.grid_y,
+            drawing_size
+        )
+
+        pygame.draw.circle(
+            screen,
+            Color.EVACUEE.value,
+            (pixel_x, pixel_y),
+            drawing_size // 2
+        )

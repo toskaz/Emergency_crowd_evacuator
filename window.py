@@ -30,7 +30,7 @@ class Window:
             selected_cell_type
         )
 
-        draw_evacuees(self.screen, evacuees)
+        draw_evacuees(self.screen, evacuees, drawing_size)
 
         pygame.display.flip()
 
