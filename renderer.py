@@ -3,7 +3,7 @@ from colors import Color
 import pygame
 from editor.tool import Tool
 from coordinates import grid_to_pixel, grid_to_pixel_center
-
+from config import drawing_size
 
 CELL_COLORS = {
     CellType.EMPTY: Color.EMPTY.value,
@@ -19,14 +19,14 @@ TOOL_COLORS = {
 }
 
 
-def draw_map(screen, grid, drawing_size, show_grid):
+def draw_map(screen, grid, show_grid):
     screen.fill(Color.BACKGROUND.value)
 
     for y in range(grid.height):
         for x in range(grid.width):
             value = grid.get(x, y)
 
-            pos_x, pos_y = grid_to_pixel(x, y, drawing_size)
+            pos_x, pos_y = grid_to_pixel(x, y)
             color = CELL_COLORS[value]
 
             # Draw the cell
@@ -71,15 +71,11 @@ def draw_ui(screen, font, selected_tool):
 
     screen.blit(text, text_rect)
 
-def draw_evacuees(screen, evacuees, drawing_size):
+def draw_evacuees(screen, evacuees):
 
     for evacuee in evacuees:
 
-        pixel_x, pixel_y = grid_to_pixel_center(
-            evacuee.grid_x,
-            evacuee.grid_y,
-            drawing_size
-        )
+        pixel_x, pixel_y = grid_to_pixel_center(evacuee.grid_x,evacuee.grid_y)
 
         pygame.draw.circle(
             screen,

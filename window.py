@@ -1,11 +1,11 @@
 import pygame
-
+from config import drawing_size
 from renderer import draw_map, draw_ui, draw_evacuees
 
 
 class Window:
 
-    def __init__(self, grid, drawing_size):
+    def __init__(self, grid):
         pygame.init()
 
         screen_width = grid.width * drawing_size
@@ -16,11 +16,10 @@ class Window:
         self.font = pygame.font.Font(None, 24)
         self.is_open = True
 
-    def draw(self, grid, evacuees, drawing_size, selected_cell_type, show_grid):
+    def draw(self, grid, evacuees, selected_cell_type, show_grid):
         draw_map(
             self.screen,
             grid,
-            drawing_size,
             show_grid
         )
 
@@ -30,7 +29,7 @@ class Window:
             selected_cell_type
         )
 
-        draw_evacuees(self.screen, evacuees, drawing_size)
+        draw_evacuees(self.screen, evacuees)
 
         pygame.display.flip()
 

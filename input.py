@@ -3,56 +3,49 @@ from editor.editor import handle_map_editor
 from editor.tool import Tool
 from action import Action
 
-def handle_input(window, evacuees, map_grid, occupancy_grid, drawing_size, selected_tool, show_grid, simulation_running):
-    action = Action.STAY
+
+def handle_input(program):
     for event in pygame.event.get():
 
-        # Close window
         if event.type == pygame.QUIT:
-            window.close()
-            return selected_tool, show_grid
-        
-        # Keyboard input
-        if event.type == pygame.KEYDOWN:
+            program.window.close()
 
-            if event.key == pygame.K_1:
-                selected_tool = Tool.WALL
+        elif event.type == pygame.KEYDOWN:
+            handle_keyboard(program, event)
 
-            elif event.key == pygame.K_2:
-                selected_tool = Tool.EVACUEE
-
-            elif event.key == pygame.K_3:
-                selected_tool = Tool.EXIT
-
-            elif event.key == pygame.K_g:
-                show_grid = not show_grid
-
-            elif event.key == pygame.K_p:
-                simulation_running = not simulation_running
-
-            elif event.key == pygame.K_w:
-                action = Action.UP
-
-            elif event.key == pygame.K_s:
-                action = Action.DOWN
-
-            elif event.key == pygame.K_a:
-                action = Action.LEFT
-
-            elif event.key == pygame.K_d:
-                action = Action.RIGHT
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            handle_mouse(program, event)
 
 
-        # Mouse input
-        if event.type == pygame.MOUSEBUTTONDOWN:
-            handle_map_editor(
-                map_grid,
-                evacuees,
-                occupancy_grid,
-                event.pos,
-                event.button,
-                drawing_size,
-                selected_tool
-            )
+def handle_keyboard(program, event):
 
-    return selected_tool, show_grid, simulation_running, action
+    if event.key == pygame.K_1:
+        program.selected_tool = Tool.WALL
+
+    elif event.key == pygame.K_2:
+        program.selected_tool = Tool.EVACUEE
+
+    elif event.key == pygame.K_3:
+        program.selected_tool = Tool.EXIT
+
+    elif event.key == pygame.K_g:
+        program.show_grid = not program.show_grid
+
+    elif event.key == pygame.K_p:
+        program.simulation_running = not program.simulation_running
+
+    elif event.key == pygame.K_w:
+        program.action = Action.UP
+
+    elif event.key == pygame.K_s:
+        program.action = Action.DOWN
+
+    elif event.key == pygame.K_a:
+        program.action = Action.LEFT
+
+    elif event.key == pygame.K_d:
+        program.action = Action.RIGHT
+
+
+def handle_mouse(program, event):
+    handle_map_editor(program.simulation, event.pos, event.button, program.selected_tool)
