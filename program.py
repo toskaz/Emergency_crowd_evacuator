@@ -5,6 +5,7 @@ from editor.tool import Tool
 from action import Action
 from simulation import Simulation
 from input import handle_input
+from action_controller import get_actions
 
 
 class Program:
@@ -27,9 +28,9 @@ class Program:
         while self.window.is_open:
 
             handle_input(self)
-
             if self.simulation_running:
-                self.simulation.step(self.action)
+                actions = get_actions(self.simulation.evacuees,self.action)
+                self.simulation.step(actions)
 
             self.window.draw(self.simulation.map_grid, self.simulation.evacuees, self.selected_tool, self.show_grid)
 
