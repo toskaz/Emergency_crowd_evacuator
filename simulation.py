@@ -1,6 +1,7 @@
 from config import image_path
 from grid import Grid
 from evacuee import Evacuee
+from drone import Drone
 from map.cell import CellType
 from action import Action
 
@@ -19,7 +20,9 @@ class Simulation:
     def __init__(self):
         self.map_grid = Grid.from_image(image_path)
         self.occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+        self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.evacuees = []
+        self.drones = []
 
     def add_evacuee(self, grid_x, grid_y):
         evacuee = Evacuee(grid_x, grid_y)
@@ -35,6 +38,20 @@ class Simulation:
 
         self.evacuees.remove(evacuee)
         self.occupancy_grid.set(grid_x, grid_y, None)
+
+    def add_drone(self, grid_x, grid_y):
+        drone = Drone(grid_x, grid_y)
+        self.drones.append(drone)
+        self.drone_occupancy_grid.set(grid_x, grid_y, drone)
+
+    def remove_drone(self, grid_x, grid_y):
+        drone = self.drone_occupancy_grid.get(grid_x, grid_y)
+
+        if drone is None:
+            return
+
+        self.drones.remove(drone)
+        self.drone_occupancy_grid.set(grid_x, grid_y, None)
 
     def touching_exit(self, evacuee):
         return self.map_grid.get(
@@ -66,15 +83,15 @@ class Simulation:
 
         return True
 
-    def get_desired_moves(self, actions):
+    def get_desired_moves(self, entities, actions):
         desired_moves = {}
         destinations = set()
 
-        for evacuee, action in zip(self.evacuees, actions):
+        for entity, action in zip(entities, actions):
             dx, dy = ACTION_DIRECTIONS[action]
 
-            x = evacuee.grid_x + dx
-            y = evacuee.grid_y + dy
+            x = entity.grid_x + dx
+            y = entity.grid_y + dy
 
             if not self.can_move_to(x, y):
                 continue
@@ -85,17 +102,17 @@ class Simulation:
                 continue
 
             destinations.add(destination)
-            desired_moves[evacuee] = destination
+            desired_moves[entity] = destination
 
         return desired_moves
 
-    def can_complete_move(self, evacuee, root, desired_moves, visited):
-        destination = desired_moves.get(evacuee)
+    def can_complete_move(self, entity, root, desired_moves, visited, occupancy_grid):
+        destination = desired_moves.get(entity)
 
         if destination is None:
             return False
 
-        occupant = self.occupancy_grid.get(*destination)
+        occupant = occupancy_grid.get(*destination)
 
         if occupant is None:
             return True
@@ -106,35 +123,41 @@ class Simulation:
         if occupant in visited:
             return False
 
-        visited.add(evacuee)
+        visited.add(entity)
 
-        return self.can_complete_move(occupant, root, desired_moves, visited)
+        return self.can_complete_move(occupant, root, desired_moves, visited, occupancy_grid)
 
-    def resolve_moves(self, desired_moves):
+    def resolve_moves(self, entities, desired_moves, occupancy_grid):
         moves = {}
 
-        for evacuee in self.evacuees:
-            if evacuee not in desired_moves:
+        for entity in entities:
+            if entity not in desired_moves:
                 continue
 
-            if self.can_complete_move(evacuee, evacuee, desired_moves, set()):
-                moves[evacuee] = desired_moves[evacuee]
+            if self.can_complete_move(entity, entity, desired_moves, set(), occupancy_grid):
+                moves[entity] = desired_moves[entity]
 
         return moves
 
-    def apply_moves(self, moves):
-        for evacuee in moves:
-            self.occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, None)
+    def apply_moves(self, moves, occupancy_grid):
+        for entity in moves:
+            occupancy_grid.set(entity.grid_x, entity.grid_y, None)
 
-        for evacuee, (x, y) in moves.items():
-            evacuee.grid_x = x
-            evacuee.grid_y = y
+        for entity, (x, y) in moves.items():
+            entity.grid_x = x
+            entity.grid_y = y
 
-            self.occupancy_grid.set(x, y,evacuee)
+            occupancy_grid.set(x, y, entity)
 
-    def step(self, actions):
-        desired_moves = self.get_desired_moves(actions)
-        moves = self.resolve_moves(desired_moves)
+    def step_entities(self, entities, actions, occupancy_grid):
+        desired_moves = self.get_desired_moves(entities, actions)
+        moves = self.resolve_moves(entities, desired_moves, occupancy_grid)
+        self.apply_moves(moves, occupancy_grid)
+        return moves
 
-        self.apply_moves(moves)
+    def step(self, evacuee_actions, drone_actions=None):
+        self.step_entities(self.evacuees, evacuee_actions, self.occupancy_grid)
         self.remove_evacuated()
+
+        if drone_actions is not None:
+            self.step_entities(self.drones, drone_actions, self.drone_occupancy_grid)

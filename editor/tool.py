@@ -5,3 +5,4 @@ class Tool(IntEnum):
     WALL = 1
     EVACUEE = 2
     EXIT = 3
+    DRONE = 4

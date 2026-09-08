@@ -20,19 +20,29 @@ def handle_map_editor(simulation, mouse_pos, button, selected_tool):
 def place(simulation, grid_x, grid_y, selected_tool):
 
     if selected_tool == Tool.WALL:
+        simulation.remove_drone(grid_x, grid_y)
         simulation.remove_evacuee(grid_x, grid_y)
         simulation.map_grid.set(grid_x, grid_y, CellType.WALL)
 
     elif selected_tool == Tool.EXIT:
+        simulation.remove_drone(grid_x, grid_y)
         simulation.remove_evacuee(grid_x, grid_y)
         simulation.map_grid.set(grid_x, grid_y, CellType.EXIT)
 
     elif selected_tool == Tool.EVACUEE:
+        simulation.remove_drone(grid_x, grid_y)
         simulation.remove_evacuee(grid_x, grid_y)
         simulation.map_grid.set(grid_x, grid_y, CellType.EMPTY)
         simulation.add_evacuee(grid_x, grid_y)
 
+    elif selected_tool == Tool.DRONE:
+        simulation.remove_drone(grid_x, grid_y)
+        simulation.remove_evacuee(grid_x, grid_y)
+        simulation.map_grid.set(grid_x, grid_y, CellType.EMPTY)
+        simulation.add_drone(grid_x, grid_y)
+
 
 def erase(simulation, grid_x, grid_y):
+    simulation.remove_drone(grid_x, grid_y)
     simulation.remove_evacuee(grid_x, grid_y)
     simulation.map_grid.set(grid_x, grid_y, CellType.EMPTY)

@@ -1,6 +1,6 @@
 import pygame
 from config import drawing_size
-from renderer import draw_map, draw_ui, draw_evacuees
+from renderer import draw_map, draw_ui, draw_evacuees, draw_drones
 
 
 class Window:
@@ -16,7 +16,7 @@ class Window:
         self.font = pygame.font.Font(None, 24)
         self.is_open = True
 
-    def draw(self, grid, evacuees, selected_cell_type, show_grid):
+    def draw(self, grid, evacuees, drones, selected_cell_type, show_grid):
         draw_map(
             self.screen,
             grid,
@@ -30,6 +30,7 @@ class Window:
         )
 
         draw_evacuees(self.screen, evacuees)
+        draw_drones(self.screen, drones)
 
         pygame.display.flip()
 
