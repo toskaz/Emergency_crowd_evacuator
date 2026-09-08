@@ -28,6 +28,9 @@ def handle_keyboard(program, event):
     elif event.key == pygame.K_3:
         program.selected_tool = Tool.EXIT
 
+    elif event.key == pygame.K_4:
+        program.selected_tool = Tool.DRONE
+
     elif event.key == pygame.K_g:
         program.show_grid = not program.show_grid
 

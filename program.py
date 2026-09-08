@@ -28,10 +28,20 @@ class Program:
         while self.window.is_open:
 
             handle_input(self)
-            if self.simulation_running:
-                actions = get_actions(self.simulation.evacuees,self.action)
-                self.simulation.step(actions)
+            if not self.window.is_open:
+                break
 
-            self.window.draw(self.simulation.map_grid, self.simulation.evacuees, self.selected_tool, self.show_grid)
+            if self.simulation_running:
+                evacuee_actions = get_actions(self.simulation.evacuees, self.action)
+                drone_actions = get_actions(self.simulation.drones, self.action)
+                self.simulation.step(evacuee_actions, drone_actions)
+
+            self.window.draw(
+                self.simulation.map_grid,
+                self.simulation.evacuees,
+                self.simulation.drones,
+                self.selected_tool,
+                self.show_grid
+            )
 
             clock.tick(60)

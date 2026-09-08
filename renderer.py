@@ -16,6 +16,7 @@ TOOL_COLORS = {
     Tool.WALL: Color.WALL.value,
     Tool.EVACUEE: Color.EVACUEE.value,
     Tool.EXIT: Color.EXIT.value,
+    Tool.DRONE: Color.DRONE.value,
 }
 
 
@@ -51,6 +52,7 @@ def draw_ui(screen, font, selected_tool):
         Tool.WALL: "WALL",
         Tool.EVACUEE: "EVACUEE",
         Tool.EXIT: "EXIT",
+        Tool.DRONE: "DRONE",
     }
 
     tool_name = tool_names[selected_tool]
@@ -80,6 +82,20 @@ def draw_evacuees(screen, evacuees):
         pygame.draw.circle(
             screen,
             Color.EVACUEE.value,
+            (pixel_x, pixel_y),
+            drawing_size // 2
+        )
+
+
+def draw_drones(screen, drones):
+
+    for drone in drones:
+
+        pixel_x, pixel_y = grid_to_pixel_center(drone.grid_x, drone.grid_y)
+
+        pygame.draw.circle(
+            screen,
+            Color.DRONE.value,
             (pixel_x, pixel_y),
             drawing_size // 2
         )
