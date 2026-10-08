@@ -1,5 +1,5 @@
 import pygame
-from editor.editor import handle_map_editor
+from editor.editor import handle_map_editor, change_exit_capacity
 from editor.tool import Tool
 from action import Action
 
@@ -15,6 +15,9 @@ def handle_input(program):
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             handle_mouse(program, event)
+
+        elif event.type == pygame.MOUSEWHEEL:
+            change_exit_capacity(program.simulation, pygame.mouse.get_pos(), event.y)
 
 
 def handle_keyboard(program, event):
@@ -36,6 +39,12 @@ def handle_keyboard(program, event):
 
     elif event.key == pygame.K_p:
         program.simulation_running = not program.simulation_running
+
+    elif event.key == pygame.K_f:
+        program.autonomous_drones = not program.autonomous_drones
+
+    elif event.key == pygame.K_v:
+        program.show_navigation = not program.show_navigation
 
     elif event.key == pygame.K_w:
         program.action = Action.UP

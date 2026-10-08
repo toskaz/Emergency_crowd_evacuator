@@ -47,7 +47,7 @@ def draw_map(screen, grid, show_grid):
                 )
 
 
-def draw_ui(screen, font, selected_tool):
+def draw_ui(screen, font, selected_tool, status_lines=()):
     tool_names = {
         Tool.WALL: "WALL",
         Tool.EVACUEE: "EVACUEE",
@@ -72,6 +72,54 @@ def draw_ui(screen, font, selected_tool):
     )
 
     screen.blit(text, text_rect)
+
+    for line in status_lines:
+        text = font.render(line, True, Color.WALL.value)
+
+        text_rect = text.get_rect(
+            top=text_rect.bottom + 4,
+            right=screen.get_width() - padding
+        )
+
+        screen.blit(text, text_rect)
+
+
+def draw_exit_capacities(screen, font, exits):
+
+    for exit_ in exits:
+        center_x = sum(x for x, _ in exit_.cells) / len(exit_.cells)
+        center_y = sum(y for _, y in exit_.cells) / len(exit_.cells)
+
+        text = font.render(f"{exit_.capacity:g}", True, Color.WALL.value)
+        text_rect = text.get_rect(center=grid_to_pixel_center(center_x, center_y))
+        text_rect.clamp_ip(screen.get_rect().inflate(-4, -2))
+
+        pygame.draw.rect(screen, Color.EXIT.value, text_rect.inflate(4, 2))
+        screen.blit(text, text_rect)
+
+
+def draw_navigation(screen, navigation, drone_routes):
+
+    for u, v, _ in navigation.edges:
+        pygame.draw.line(
+            screen,
+            Color.NAVIGATION.value,
+            grid_to_pixel_center(*navigation.representatives[u]),
+            grid_to_pixel_center(*navigation.representatives[v])
+        )
+
+    for cell in navigation.representatives:
+        pygame.draw.circle(screen, Color.NAVIGATION.value, grid_to_pixel_center(*cell), 2)
+
+    for route in drone_routes.values():
+        pygame.draw.lines(
+            screen,
+            Color.DRONE.value,
+            False,
+            [grid_to_pixel_center(*cell) for cell in route],
+            2
+        )
+
 
 def draw_evacuees(screen, evacuees):
 
