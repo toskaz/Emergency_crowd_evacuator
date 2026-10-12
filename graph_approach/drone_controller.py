@@ -1,7 +1,7 @@
 import math
 
-from action import Action
-from config import navigation_block_size, drone_lead_distance
+from controls.action import Action
+from utils.config import navigation_block_size, drone_lead_distance
 from graph_approach.navigation_graph import NavigationGraph
 from simulation import ACTION_DIRECTIONS
 

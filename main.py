@@ -1,4 +1,4 @@
-from program import Program
+from utils.program import Program
 
 def main():
     Program().run()

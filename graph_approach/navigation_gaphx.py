@@ -1,6 +1,6 @@
 from multi_target_dijkstra import get_shortest_path_to_exits
 import networkx as nx
-from grid import Grid
+from grids.grid import Grid
 
 
 class NavigationGraphx:

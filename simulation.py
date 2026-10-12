@@ -1,11 +1,11 @@
-from cluster_grid  import ClusterGrid
-from config import image_path, default_exit_capacity
-from grid import Grid
-from evacuee import Evacuee
-from drone import Drone
+from grids.cluster_grid  import ClusterGrid
+from utils.config import image_path, default_exit_capacity
+from grids.grid import Grid
+from entities.evacuee import Evacuee
+from entities.drone import Drone
 from map.cell import CellType
 from map.exit import find_exits
-from action import Action
+from controls.action import Action
 
 
 ACTION_DIRECTIONS = {

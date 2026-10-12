@@ -1,7 +1,7 @@
 from map.cell import CellType
 from editor.tool import Tool
-from coordinates import pixel_to_grid
-from config import exit_capacity_step
+from grids.coordinates import pixel_to_grid
+from utils.config import exit_capacity_step
 
 def handle_map_editor(simulation, mouse_pos, button, selected_tool):
     pos_x, pos_y = mouse_pos

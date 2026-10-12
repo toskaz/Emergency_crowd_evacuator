@@ -3,7 +3,7 @@ from collections import deque
 
 import numpy as np
 
-from grid import Grid
+from grids.grid import Grid
 from map.cell import CellType
 from graph_approach.floyd_warshall import floyd_warshall, reconstruct_path
 
