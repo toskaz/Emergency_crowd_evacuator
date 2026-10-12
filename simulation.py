@@ -26,7 +26,7 @@ class Simulation:
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.exit_capacity_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.cluster_grid = ClusterGrid(self.map_grid)
-        self.navigation_graph = NavigationGraphx(self.cluster_grid, block_size=1)
+        self.navigation_graph = NavigationGraphx(self.cluster_grid)
         self.evacuees = []
         self.drones = []
 

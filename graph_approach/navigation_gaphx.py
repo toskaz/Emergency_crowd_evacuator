@@ -1,31 +1,15 @@
 from graph_approach.multi_target_dijkstra import get_shortest_path_to_exits
 import networkx as nx
-from grids.grid import Grid
 
 
 class NavigationGraphx:
-    def __init__(self, cluster_grid, block_size):
-        #self.height = cluster_grid.height
-        #self.width = cluster_grid.width
-        #self.block_size = block_size
+    def __init__(self, cluster_grid):
 
-        #self.node_of = Grid(self.width, self.height, None)
-        self.node_cells = []
-        self.representatives = []
+        self.cluster_grid = cluster_grid
 
-        self.edges = []
-
-        #self.build_nodes(cluster_grid)
-        #self.build_edges()
-        
         self.G = nx.Graph()
-        # u - poczatek drogi, v - koniec drogi
-        #potem dodamy weight #TODO dodaj wagę
-        for u, v in self.edges:
-            self.G.add_edge(u, v)
-        
-
-    #funkcja node_at 
+        self.G.add_nodes_from(self.cluster_grid.clusters)
+        self.G.add_edges_from(self.cluster_grid.adjacent_cluster_pairs)
         
     def distance_to_closest_source(self, source_cells, target_cell):
         target_node = self.node_at(target_cell)

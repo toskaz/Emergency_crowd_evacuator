@@ -1,6 +1,6 @@
 import pygame
 from utils.config import drawing_size
-from graphics.renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_exit_capacities, draw_navigation, draw_clusters
+from graphics.renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_exit_capacities, draw_navigation, draw_clusters, draw_cluster_edges
 
 
 class Window:
@@ -24,6 +24,7 @@ class Window:
             grid,
             show_grid
         )
+        draw_cluster_edges(self.screen, cluster_grid)
         draw_clusters(self.screen, cluster_grid, font=self.small_font)
 
         if navigation is not None:

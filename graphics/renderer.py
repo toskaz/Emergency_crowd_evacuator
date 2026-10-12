@@ -156,13 +156,27 @@ def cluster_color(x, y):
     return CLUSTER_COLORS[color_index]
 
 
+def draw_cluster_edges(screen, cluster_grid):
+    for first_cluster, second_cluster in cluster_grid.adjacent_cluster_pairs:
+        first_center = grid_to_pixel_center(*cluster_grid.get_centroid(first_cluster))
+        second_center = grid_to_pixel_center(*cluster_grid.get_centroid(second_cluster))
+        pygame.draw.line(
+            screen,
+            Color.DRONE.value,
+            tuple(round(value) for value in first_center),
+            tuple(round(value) for value in second_center),
+            2
+        )
+
+
 def draw_clusters(screen, overlay_grid, alpha=110, font=None):
     cells = overlay_grid.grid
 
     overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA) #need for proper transparency
 
-    for y, row in enumerate(cells):
-        for x, cluster_id in enumerate(row):
+    for y in range(cells.height):
+        for x in range(cells.width):
+            cluster_id = cells.get(x, y)
             if cluster_id is None or cluster_id == -1:
                 continue
 
@@ -172,6 +186,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
             pygame.draw.rect(overlay,(*color, alpha),(px, py, drawing_size, drawing_size))
 
     screen.blit(overlay, (0, 0))
+
     if font is None:
         font = pygame.font.Font(None, 18)
 
