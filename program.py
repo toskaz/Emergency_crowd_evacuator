@@ -67,7 +67,8 @@ class Program:
                 self.simulation.exits,
                 self.status_lines(),
                 navigation,
-                drone_routes
+                drone_routes,
+                self.simulation.cluster_grid
             )
 
             clock.tick(60)

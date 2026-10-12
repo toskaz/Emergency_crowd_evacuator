@@ -1,3 +1,4 @@
+from cluster_grid  import ClusterGrid
 from config import image_path, default_exit_capacity
 from grid import Grid
 from evacuee import Evacuee
@@ -23,6 +24,7 @@ class Simulation:
         self.occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.exit_capacity_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+        self.cluster_grid = ClusterGrid(self.map_grid)
         self.evacuees = []
         self.drones = []
 
