@@ -1,6 +1,6 @@
 import pygame
-from config import drawing_size
-from renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_exit_capacities, draw_navigation, draw_clusters
+from utils.config import drawing_size
+from graphics.renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_exit_capacities, draw_navigation, draw_clusters
 
 
 class Window:

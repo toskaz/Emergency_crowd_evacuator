@@ -1,9 +1,9 @@
 from map.cell import CellType
-from colors import Color
+from graphics.colors import Color
 import pygame
 from editor.tool import Tool
-from coordinates import grid_to_pixel, grid_to_pixel_center
-from config import cluster_size, drawing_size
+from grids.coordinates import grid_to_pixel, grid_to_pixel_center
+from utils.config import cluster_size, drawing_size
 
 CLUSTER_COLORS = ((40, 170, 225), (245, 170, 60))
 

@@ -1,4 +1,4 @@
-from config import drawing_size
+from utils.config import drawing_size
 
 def grid_to_pixel(grid_x, grid_y):
     pixel_x = grid_x * drawing_size

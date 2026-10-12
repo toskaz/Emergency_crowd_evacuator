@@ -1,5 +1,5 @@
 from map.cell import CellType
-from config import cluster_size
+from utils.config import cluster_size
 
 
 class ClusterGrid:

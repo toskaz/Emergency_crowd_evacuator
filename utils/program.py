@@ -1,11 +1,11 @@
 import pygame
 
-from window import Window
+from graphics.window import Window
 from editor.tool import Tool
-from action import Action
+from controls.action import Action
 from simulation import Simulation
-from input import handle_input
-from action_controller import get_actions
+from controls.input import handle_input
+from controls.action_controller import get_actions
 from graph_approach.drone_controller import GraphDroneController
 
 

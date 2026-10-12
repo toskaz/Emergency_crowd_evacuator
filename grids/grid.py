@@ -1,6 +1,6 @@
 import cv2
 from map.cell import CellType
-from config import block_size, acceptance_threshold
+from utils.config import block_size, acceptance_threshold
 
 class Grid:
 

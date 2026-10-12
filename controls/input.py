@@ -1,7 +1,7 @@
 import pygame
 from editor.editor import handle_map_editor, change_exit_capacity
 from editor.tool import Tool
-from action import Action
+from controls.action import Action
 
 
 def handle_input(program):
