@@ -1,3 +1,4 @@
 pygame
 opencv-python
 numpy
+networkx
