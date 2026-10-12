@@ -179,8 +179,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
         if not cluster_cells:
             continue
 
-        center_x = sum(x for x, _ in cluster_cells) / len(cluster_cells) # can replace with mean() maybe
-        center_y = sum(y for _, y in cluster_cells) / len(cluster_cells)
+        center_x, center_y = overlay_grid.get_centroid(cluster_id)
         pixel_x, pixel_y = grid_to_pixel_center(center_x, center_y)
         label = font.render(str(cluster_id), True, Color.BACKGROUND.value)
         label_rect = label.get_rect(center=(round(pixel_x), round(pixel_y)))

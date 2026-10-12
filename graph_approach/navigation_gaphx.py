@@ -1,22 +1,21 @@
-from multi_target_dijkstra import get_shortest_path_to_exits
+from graph_approach.multi_target_dijkstra import get_shortest_path_to_exits
 import networkx as nx
 from grids.grid import Grid
 
 
 class NavigationGraphx:
-    def __init__(self, map_grid, block_size):
-        self.height = map_grid.height
-        self.width = map_grid.width
-        self.block_size = block_size
+    def __init__(self, cluster_grid, block_size):
+        #self.height = cluster_grid.height
+        #self.width = cluster_grid.width
+        #self.block_size = block_size
 
-        self.node_of = Grid(self.width, self.height, None)
+        #self.node_of = Grid(self.width, self.height, None)
         self.node_cells = []
         self.representatives = []
 
         self.edges = []
 
-        #pojnar to zrobi
-        #self.build_nodes(map_grid)
+        #self.build_nodes(cluster_grid)
         #self.build_edges()
         
         self.G = nx.Graph()

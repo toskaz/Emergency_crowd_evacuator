@@ -57,3 +57,11 @@ class ClusterGrid:
 
     def get(self, x, y):
         return self.grid[y][x]
+
+    def get_centroid(self, cluster_id):
+        cells = self.clusters[cluster_id]
+        sum_x = sum(cell[0] for cell in cells)
+        sum_y = sum(cell[1] for cell in cells)
+        count = len(cells)
+
+        return (sum_x / count, sum_y / count)

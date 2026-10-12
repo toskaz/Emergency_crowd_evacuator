@@ -6,6 +6,7 @@ from entities.drone import Drone
 from map.cell import CellType
 from map.exit import find_exits
 from controls.action import Action
+from graph_approach.navigation_gaphx import NavigationGraphx
 
 
 ACTION_DIRECTIONS = {
@@ -25,6 +26,7 @@ class Simulation:
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.exit_capacity_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.cluster_grid = ClusterGrid(self.map_grid)
+        self.navigation_graph = NavigationGraphx(self.cluster_grid, block_size=1)
         self.evacuees = []
         self.drones = []
 
