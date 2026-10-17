@@ -1,12 +1,14 @@
 from map.cell import CellType
 from grids.grid import Grid
 from utils.config import cluster_size
+from collections import deque
 
 
 class ClusterGrid:
     def __init__(self, grid):
         self.grid = Grid(grid.width, grid.height)
         self.clusters = {}
+        self.exit_clusters = set()
         self.adjacent_cluster_pairs = set()
         self.build(grid)
 
@@ -23,12 +25,49 @@ class ClusterGrid:
                     for x in range(block_x, min(block_x + cluster_width, grid.width)):
                         if grid.get(x, y) == CellType.WALL:
                             self.grid.set(x, y, -1)
-                        elif self.grid.get(x, y) is None:
+                        elif grid.get(x, y) != CellType.EXIT and self.grid.get(x, y) is None:
                             cluster_id += 1
                             self.clusters[cluster_id] = []
                             self.fill(grid, x, y, origin_x, origin_y, cluster_id)
 
+        cluster_id = self.add_exit_sectors(grid, cluster_id)
         self.build_adjacent_cluster_pairs()
+
+    def add_exit_sectors(self, grid, cluster_id):
+        seen = set()
+
+        for y in range(grid.height):
+            for x in range(grid.width):
+                if grid.get(x, y) != CellType.EXIT or (x, y) in seen:
+                    continue
+
+                cluster_id += 1
+                self.clusters[cluster_id] = []
+                self.exit_clusters.add(cluster_id)
+                pending = deque([(x, y)])
+                seen.add((x, y))
+
+                while pending:
+                    current_x, current_y = pending.popleft()
+                    self.grid.set(current_x, current_y, cluster_id)
+                    self.clusters[cluster_id].append((current_x, current_y))
+
+                    for neighbor_x, neighbor_y in (
+                        (current_x + 1, current_y),
+                        (current_x - 1, current_y),
+                        (current_x, current_y + 1),
+                        (current_x, current_y - 1),
+                    ):
+                        neighbor = (neighbor_x, neighbor_y)
+                        if (
+                            grid.in_bounds(*neighbor)
+                            and grid.get(*neighbor) == CellType.EXIT
+                            and neighbor not in seen
+                        ):
+                            seen.add(neighbor)
+                            pending.append(neighbor)
+
+        return cluster_id
 
     def fill(self, grid, x, y, origin_x, origin_y, cluster_id):
         pending = [(x, y)]
@@ -51,6 +90,8 @@ class ClusterGrid:
                 continue
             if grid.get(current_x, current_y) == CellType.WALL:
                 self.grid.set(current_x, current_y, -1)
+                continue
+            if grid.get(current_x, current_y) == CellType.EXIT:
                 continue
 
             self.grid.set(current_x, current_y, cluster_id)

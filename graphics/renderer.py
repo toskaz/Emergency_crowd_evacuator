@@ -96,7 +96,7 @@ def draw_exit_capacities(screen, font, exits):
         text_rect = text.get_rect(center=grid_to_pixel_center(center_x, center_y))
         text_rect.clamp_ip(screen.get_rect().inflate(-4, -2))
 
-        pygame.draw.rect(screen, Color.EXIT.value, text_rect.inflate(4, 2))
+        #pygame.draw.rect(screen, Color.EXIT.value, text_rect.inflate(4, 2))
         screen.blit(text, text_rect)
 
 
@@ -181,7 +181,11 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
                 continue
 
             px, py = grid_to_pixel(x, y)
-            color = cluster_color(x, y)
+            color = (
+                Color.EXIT.value
+                if cluster_id in overlay_grid.exit_clusters
+                else cluster_color(x, y)
+            )
 
             pygame.draw.rect(overlay,(*color, alpha),(px, py, drawing_size, drawing_size))
 

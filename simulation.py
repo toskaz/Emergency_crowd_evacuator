@@ -53,6 +53,8 @@ class Simulation:
             self.exit_capacity_grid.set(x, y, None)
 
         self.map_version += 1
+        self.cluster_grid = ClusterGrid(self.map_grid) # currently rebuilt every single time, it will need to be changes since we want editable clusters
+        self.navigation_graph = NavigationGraphx(self.cluster_grid) 
 
     def new_exit_cell_capacity(self, x, y):
         # Painting an exit cell right next to an existing exit just makes that exit wider,
