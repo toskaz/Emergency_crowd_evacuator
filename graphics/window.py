@@ -18,14 +18,16 @@ class Window:
         self.is_open = True
 
     def draw(self, grid, evacuees, drones, selected_cell_type, show_grid,
-            exits=(), status_lines=(), navigation=None, drone_routes=None, cluster_grid=None):
+            exits=(), status_lines=(), navigation=None, drone_routes=None, cluster_grid=None,
+            show_cluster_overlay=True):
         draw_map(
             self.screen,
             grid,
             show_grid
         )
-        draw_cluster_edges(self.screen, cluster_grid)
-        draw_clusters(self.screen, cluster_grid, font=self.small_font)
+        if show_cluster_overlay:
+            draw_cluster_edges(self.screen, cluster_grid)
+            draw_clusters(self.screen, cluster_grid, font=self.small_font)
 
         if navigation is not None:
             draw_navigation(self.screen, navigation, drone_routes or {})

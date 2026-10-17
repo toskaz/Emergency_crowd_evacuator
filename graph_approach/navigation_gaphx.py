@@ -11,6 +11,15 @@ class NavigationGraphx:
         self.G.add_nodes_from(self.cluster_grid.clusters)
         self.G.add_edges_from(self.cluster_grid.adjacent_cluster_pairs)
         
+    def node_at(self, cell):
+        x, y = cell
+
+        if not self.cluster_grid.grid.in_bounds(x, y):
+            return None
+
+        node = self.cluster_grid.get(x, y)
+        return node if node in self.G else None
+
     def distance_to_closest_source(self, source_cells, target_cell):
         target_node = self.node_at(target_cell)
 

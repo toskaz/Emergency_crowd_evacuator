@@ -101,26 +101,16 @@ def draw_exit_capacities(screen, font, exits):
 
 
 def draw_navigation(screen, navigation, drone_routes):
-
-    for u, v, _ in navigation.edges:
-        pygame.draw.line(
-            screen,
-            Color.NAVIGATION.value,
-            grid_to_pixel_center(*navigation.representatives[u]),
-            grid_to_pixel_center(*navigation.representatives[v])
-        )
-
-    for cell in navigation.representatives:
-        pygame.draw.circle(screen, Color.NAVIGATION.value, grid_to_pixel_center(*cell), 2)
+    cluster_grid = navigation.cluster_grid
 
     for route in drone_routes.values():
-        pygame.draw.lines(
-            screen,
-            Color.DRONE.value,
-            False,
-            [grid_to_pixel_center(*cell) for cell in route],
-            2
-        )
+        points = [
+            tuple(round(value) for value in grid_to_pixel_center(*cluster_grid.get_centroid(cluster_id)))
+            for cluster_id in route
+        ]
+
+        if len(points) > 1:
+            pygame.draw.lines(screen, Color.DRONE.value, False, points, 2)
 
 
 def draw_evacuees(screen, evacuees):

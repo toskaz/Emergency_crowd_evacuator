@@ -12,7 +12,7 @@ def get_shortest_path_to_exits(G, source_nodes, target_node):
     try:
         distance, path = nx.multi_source_dijkstra(
             G, 
-            source=source_nodes, 
+            sources=source_nodes, 
             target=target_node, 
             #weight='weight' #TODO : implementacja wagi
         )

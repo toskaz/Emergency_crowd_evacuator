@@ -46,6 +46,9 @@ def handle_keyboard(program, event):
     elif event.key == pygame.K_v:
         program.show_navigation = not program.show_navigation
 
+    elif event.key == pygame.K_c:
+        program.show_cluster_overlay = not program.show_cluster_overlay
+
     elif event.key == pygame.K_w:
         program.action = Action.UP
 

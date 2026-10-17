@@ -6,14 +6,13 @@ from controls.action import Action
 from simulation import Simulation
 from controls.input import handle_input
 from controls.action_controller import get_actions
-from graph_approach.drone_controller import GraphDroneController
 
 
 class Program:
 
     def __init__(self):
         self.simulation = Simulation()
-        self.drone_controller = GraphDroneController()
+        self.drone_routes = {}
 
         self.window = Window(
             self.simulation.map_grid,
@@ -25,38 +24,32 @@ class Program:
         self.action = Action.STAY
         self.autonomous_drones = True
         self.show_navigation = False
+        self.show_cluster_overlay = True
 
     def run(self):
         clock = pygame.time.Clock()
 
         while self.window.is_open:
 
+            was_running = self.simulation_running
             handle_input(self)
             if not self.window.is_open:
                 break
+
+            if self.simulation_running and not was_running:
+                self.plan_drone_routes()
 
             if self.simulation_running:
                 evacuee_actions = get_actions(self.simulation.evacuees, self.action)
 
                 if self.autonomous_drones:
-                    drone_actions = self.drone_controller.get_actions(self.simulation)
+                    drone_actions = [Action.STAY] * len(self.simulation.drones)
                 else:
                     drone_actions = get_actions(self.simulation.drones, self.action)
 
                 self.simulation.step(evacuee_actions, drone_actions)
 
-            navigation = None
-            drone_routes = {}
-
-            if self.show_navigation:
-                navigation = self.drone_controller.update_navigation(self.simulation)
-
-                if self.autonomous_drones:
-                    drone_routes = {
-                        drone: route
-                        for drone, route in self.drone_controller.routes.items()
-                        if drone in self.simulation.drones
-                    }
+            navigation = self.simulation.navigation_graph if self.show_navigation else None
 
             self.window.draw(
                 self.simulation.map_grid,
@@ -67,14 +60,27 @@ class Program:
                 self.simulation.exits,
                 self.status_lines(),
                 navigation,
-                drone_routes,
-                self.simulation.cluster_grid
+                self.drone_routes,
+                self.simulation.cluster_grid,
+                self.show_cluster_overlay
             )
 
             clock.tick(60)
 
+    def plan_drone_routes(self):
+        graph = self.simulation.navigation_graph
+        exit_cells = [cell for exit_ in self.simulation.exits for cell in exit_.cells]
+        self.drone_routes = {}
+
+        for drone in self.simulation.drones:
+            start = (drone.grid_x, drone.grid_y)
+            _, route = graph.distance_to_closest_source(exit_cells, start)
+            self.drone_routes[drone] = route
+
+        self.show_navigation = True
+
     def status_lines(self):
-        drone_mode = "Floyd-Warshall" if self.autonomous_drones else "manual"
+        drone_mode = "cluster route" if self.autonomous_drones else "manual"
         evacuated = self.simulation.evacuated_count
         total = evacuated + len(self.simulation.evacuees)
 
