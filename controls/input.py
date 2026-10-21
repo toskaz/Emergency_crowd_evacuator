@@ -38,7 +38,7 @@ def handle_keyboard(program, event):
         program.show_grid = not program.show_grid
 
     elif event.key == pygame.K_p:
-        program.simulation_running = not program.simulation_running
+        program.toggle_running()
 
     elif event.key == pygame.K_f:
         program.autonomous_drones = not program.autonomous_drones

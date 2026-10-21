@@ -7,6 +7,7 @@ from torch import nn
 
 from controls.action import Action
 from map.cell import CellType
+from entities.state import DroneState
 
 
 ACTION_DIRECTIONS = {
@@ -63,7 +64,7 @@ class DQNDroneController:
         actions = []
 
         for drone in simulation.drones:
-            if simulation.map_grid.get(drone.grid_x, drone.grid_y) == CellType.EXIT:
+            if drone.state == DroneState.AT_EXIT:
                 self.pending_transitions.pop(drone, None)
                 actions.append(Action.STAY)
                 continue
@@ -105,7 +106,7 @@ class DQNDroneController:
             else:
                 reward -= 0.05
 
-            done = simulation.map_grid.get(*current_position) == CellType.EXIT
+            done = drone.state == DroneState.AT_EXIT
             if done:
                 reward += 2.0
 

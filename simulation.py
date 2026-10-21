@@ -3,6 +3,7 @@ from utils.config import image_path, default_exit_capacity
 from grids.grid import Grid
 from entities.evacuee import Evacuee
 from entities.drone import Drone
+from entities.state import EvacueeState, DroneState
 from map.cell import CellType
 from map.exit import find_exits
 from controls.action import Action
@@ -128,17 +129,17 @@ class Simulation:
         self.drones.remove(drone)
         self.drone_occupancy_grid.set(grid_x, grid_y, None)
 
-    def touching_exit(self, evacuee):
+    def touching_exit(self, entity):
         return self.map_grid.get(
-            evacuee.grid_x,
-            evacuee.grid_y
+            entity.grid_x,
+            entity.grid_y
         ) == CellType.EXIT
 
     def remove_evacuated(self):
         evacuated = set()
 
         for exit_ in self.exits:
-            # First come, first served: whoever has been waiting in the exit the longest goes out first.
+            # First come, first served
             waiting = sorted(
                 self.evacuees_in_exit(exit_),
                 key=lambda evacuee: evacuee.waiting_steps,
@@ -148,6 +149,7 @@ class Simulation:
 
             for evacuee in waiting[:allowed]:
                 self.occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, None)
+                evacuee.state = EvacueeState.EVACUATED
                 evacuated.add(evacuee)
 
             for evacuee in waiting[allowed:]:
@@ -155,6 +157,18 @@ class Simulation:
 
         self.evacuees[:] = [evacuee for evacuee in self.evacuees if evacuee not in evacuated]
         self.evacuated_count += len(evacuated)
+
+    def update_states(self):
+        for evacuee in self.evacuees:
+            if evacuee.state == EvacueeState.MOVING and self.touching_exit(evacuee):
+                evacuee.state = EvacueeState.WAITING_AT_EXIT
+
+            elif evacuee.state == EvacueeState.WAITING_AT_EXIT and not self.touching_exit(evacuee):
+                evacuee.state = EvacueeState.MOVING
+                evacuee.waiting_steps = 0
+
+        for drone in self.drones:
+            drone.state = DroneState.AT_EXIT if self.touching_exit(drone) else DroneState.FLYING
 
     def can_move_to(self, x, y):
         if not self.map_grid.in_bounds(x, y):
@@ -238,17 +252,20 @@ class Simulation:
         return moves
 
     def step(self, evacuee_actions, drone_actions=None):
-        # Someone already standing in an exit is just waiting for their turn to get out,
-        # so they shouldn't wander back into the building.
+        #update based on changes made in prev step
+        self.update_states()
+
         evacuee_actions = [
-            Action.STAY if self.touching_exit(evacuee) else action
+            Action.STAY if evacuee.state == EvacueeState.WAITING_AT_EXIT else action
             for evacuee, action in zip(self.evacuees, evacuee_actions)
         ]
 
         self.step_entities(self.evacuees, evacuee_actions, self.occupancy_grid)
-        self.remove_evacuated()
 
         if drone_actions is not None:
             self.step_entities(self.drones, drone_actions, self.drone_occupancy_grid)
+
+        self.update_states()
+        self.remove_evacuated()
 
         self.step_count += 1

@@ -1,3 +1,5 @@
+from enum import Enum
+
 import pygame
 
 from graphics.window import Window
@@ -7,6 +9,13 @@ from controls.drone_dqn import DQNDroneController
 from simulation import Simulation
 from controls.input import handle_input
 from controls.action_controller import get_actions
+
+
+#Enumek stanów ;)
+class ProgramState(Enum):
+    EDITING = "editing"
+    RUNNING = "running"
+    PAUSED = "paused"
 
 
 class Program:
@@ -22,7 +31,7 @@ class Program:
 
         self.selected_tool = Tool.WALL
         self.show_grid = True
-        self.simulation_running = False
+        self.state = ProgramState.EDITING
         self.action = Action.STAY
         self.autonomous_drones = True
         self.show_navigation = False
@@ -33,15 +42,11 @@ class Program:
 
         while self.window.is_open:
 
-            was_running = self.simulation_running
             handle_input(self)
             if not self.window.is_open:
                 break
 
-            if self.simulation_running and not was_running:
-                self.plan_drone_routes()
-
-            if self.simulation_running:
+            if self.state == ProgramState.RUNNING:
                 evacuee_actions = get_actions(self.simulation.evacuees, self.action)
 
                 if self.autonomous_drones:
@@ -74,6 +79,22 @@ class Program:
 
             clock.tick(60)
 
+    def toggle_running(self):
+        if self.state == ProgramState.RUNNING:
+            self.change_state(ProgramState.PAUSED)
+        else:
+            self.change_state(ProgramState.RUNNING)
+
+    def change_state(self, new_state):
+        if new_state == self.state:
+            return
+
+        self.state = new_state
+
+        #pause/start = new state
+        if new_state == ProgramState.RUNNING:
+            self.plan_drone_routes()
+
     def plan_drone_routes(self):
         graph = self.simulation.navigation_graph
         exit_cells = [cell for exit_ in self.simulation.exits for cell in exit_.cells]
@@ -92,6 +113,7 @@ class Program:
         total = evacuated + len(self.simulation.evacuees)
 
         return [
+            f"State: {self.state.value}",
             f"Drones: {drone_mode}",
             f"Step: {self.simulation.step_count}",
             f"Evacuated: {evacuated}/{total}",
