@@ -17,7 +17,7 @@ class Program:
         self.drone_controller = DQNDroneController()
 
         self.window = Window(
-            self.simulation.map_grid,
+            self.simulation.grid_world.map_grid,
         )
 
         self.selected_tool = Tool.WALL
@@ -56,26 +56,23 @@ class Program:
                 if self.autonomous_drones:
                     self.drone_controller.learn(self.simulation, self.drone_routes)
 
-            navigation = self.simulation.navigation_graph if self.show_navigation else None
-
             self.window.draw(
-                self.simulation.map_grid,
+                self.simulation.grid_world,
                 self.simulation.evacuees,
                 self.simulation.drones,
                 self.selected_tool,
                 self.show_grid,
                 self.status_lines(),
-                navigation,
+                self.show_navigation,
                 self.drone_routes,
-                self.simulation.cluster_grid,
                 self.show_cluster_overlay
             )
 
             clock.tick(60)
 
     def plan_drone_routes(self):
-        graph = self.simulation.navigation_graph
-        exit_cells = [cell for exit_ in self.simulation.exits for cell in exit_.cells]
+        graph = self.simulation.grid_world.navigation_graph
+        exit_cells = [cell for exit_ in self.simulation.grid_world.exits for cell in exit_.cells]
         self.drone_routes = {}
 
         for drone in self.simulation.drones:
