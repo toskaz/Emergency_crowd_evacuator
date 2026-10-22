@@ -71,15 +71,8 @@ class Program:
             clock.tick(60)
 
     def plan_drone_routes(self):
-        graph = self.simulation.grid_world.navigation_graph
-        exit_cells = [cell for exit_ in self.simulation.grid_world.exits for cell in exit_.cells]
-        self.drone_routes = {}
-
-        for drone in self.simulation.drones:
-            start = (drone.grid_x, drone.grid_y)
-            _, route = graph.distance_to_closest_source(exit_cells, start)
-            self.drone_routes[drone] = route
-
+        grid_world = self.simulation.grid_world
+        self.drone_routes = grid_world.plan_drone_routes(self.simulation.drones)
         self.show_navigation = True
 
     def status_lines(self):

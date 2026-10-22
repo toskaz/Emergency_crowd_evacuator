@@ -32,6 +32,17 @@ class Grid_World:
     def exits(self):
         return find_exits(self.map_grid)
 
+    def route_to_closest_exit(self, start):
+        exit_cells = [cell for exit_ in self.exits for cell in exit_.cells]
+        _, route = self.navigation_graph.distance_to_closest_source(exit_cells, start)
+        return route
+
+    def plan_drone_routes(self, drones):
+        return {
+            drone: self.route_to_closest_exit((drone.grid_x, drone.grid_y))
+            for drone in drones
+        }
+
     def set_cell(self, x, y, cell_type):
         if self.map_grid.get(x, y) == cell_type:
             return
