@@ -1,6 +1,6 @@
 import pygame
 from utils.config import drawing_size
-from graphics.renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_exit_capacities, draw_navigation, draw_clusters, draw_cluster_edges
+from graphics.renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_navigation, draw_clusters, draw_cluster_edges
 
 
 class Window:
@@ -18,7 +18,7 @@ class Window:
         self.is_open = True
 
     def draw(self, grid, evacuees, drones, selected_cell_type, show_grid,
-            exits=(), status_lines=(), navigation=None, drone_routes=None, cluster_grid=None,
+            status_lines=(), navigation=None, drone_routes=None, cluster_grid=None,
             show_cluster_overlay=True):
         draw_map(
             self.screen,
@@ -31,8 +31,6 @@ class Window:
 
         if navigation is not None:
             draw_navigation(self.screen, navigation, drone_routes or {})
-
-        draw_exit_capacities(self.screen, self.small_font, exits)
 
         draw_ui(
             self.screen,

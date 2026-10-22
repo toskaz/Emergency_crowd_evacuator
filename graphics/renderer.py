@@ -86,20 +86,6 @@ def draw_ui(screen, font, selected_tool, status_lines=()):
         screen.blit(text, text_rect)
 
 
-def draw_exit_capacities(screen, font, exits):
-
-    for exit_ in exits:
-        center_x = sum(x for x, _ in exit_.cells) / len(exit_.cells)
-        center_y = sum(y for _, y in exit_.cells) / len(exit_.cells)
-
-        text = font.render(f"{exit_.capacity:g}", True, Color.WALL.value)
-        text_rect = text.get_rect(center=grid_to_pixel_center(center_x, center_y))
-        text_rect.clamp_ip(screen.get_rect().inflate(-4, -2))
-
-        #pygame.draw.rect(screen, Color.EXIT.value, text_rect.inflate(4, 2))
-        screen.blit(text, text_rect)
-
-
 def draw_navigation(screen, navigation, drone_routes):
     cluster_grid = navigation.cluster_grid
 

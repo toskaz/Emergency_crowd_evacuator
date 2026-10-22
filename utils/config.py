@@ -9,7 +9,4 @@ acceptance_threshold = 0.40
 navigation_block_size = 4
 drone_lead_distance = 3
 
-default_exit_capacity = 1.0
-exit_capacity_step = 0.5
-
 cluster_size = 3

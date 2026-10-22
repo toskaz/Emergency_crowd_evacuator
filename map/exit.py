@@ -1,25 +1,17 @@
-import math
 from collections import deque
 
 from map.cell import CellType
 
 
 # An exit is a group of EXIT cells next to each other, so a door painted with a few cells is still
-# one exit. capacity says how many people can get out through it in one simulation step.
+# one exit.
 class Exit:
 
-    def __init__(self, cells, capacity):
+    def __init__(self, cells):
         self.cells = cells
-        self.capacity = capacity
-
-    def departures_allowed(self, step):
-        # How many people can get out in this step. Over t steps it adds up to floor(capacity * t),
-        # so with capacity 2 two people leave every step and with 0.5 one person every other step.
-        # The tiny 1e-9 is only there so float rounding (like 2.9999999) doesn't eat a person.
-        return math.floor(self.capacity * (step + 1) + 1e-9) - math.floor(self.capacity * step + 1e-9)
 
 
-def find_exits(map_grid, capacity_grid):
+def find_exits(map_grid):
     exits = []
     seen = set()
 
@@ -44,7 +36,6 @@ def find_exits(map_grid, capacity_grid):
                         seen.add(neighbor)
                         queue.append(neighbor)
 
-            capacity = max(capacity_grid.get(cell_x, cell_y) for cell_x, cell_y in cells)
-            exits.append(Exit(cells, capacity))
+            exits.append(Exit(cells))
 
     return exits

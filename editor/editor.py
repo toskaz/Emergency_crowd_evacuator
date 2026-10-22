@@ -1,7 +1,6 @@
 from map.cell import CellType
 from editor.tool import Tool
 from grids.coordinates import pixel_to_grid
-from utils.config import exit_capacity_step
 
 def handle_map_editor(simulation, mouse_pos, button, selected_tool):
     pos_x, pos_y = mouse_pos
@@ -47,17 +46,3 @@ def erase(simulation, grid_x, grid_y):
     simulation.remove_drone(grid_x, grid_y)
     simulation.remove_evacuee(grid_x, grid_y)
     simulation.set_cell(grid_x, grid_y, CellType.EMPTY)
-
-
-def change_exit_capacity(simulation, mouse_pos, steps):
-    grid_x, grid_y = pixel_to_grid(*mouse_pos)
-
-    if not simulation.map_grid.in_bounds(grid_x, grid_y):
-        return
-
-    exit_ = simulation.exit_at(grid_x, grid_y)
-
-    if exit_ is None:
-        return
-
-    simulation.set_exit_capacity(exit_, exit_.capacity + steps * exit_capacity_step)

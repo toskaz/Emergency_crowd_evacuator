@@ -64,7 +64,6 @@ class Program:
                 self.simulation.drones,
                 self.selected_tool,
                 self.show_grid,
-                self.simulation.exits,
                 self.status_lines(),
                 navigation,
                 self.drone_routes,

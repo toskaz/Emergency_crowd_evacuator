@@ -1,5 +1,5 @@
 import pygame
-from editor.editor import handle_map_editor, change_exit_capacity
+from editor.editor import handle_map_editor
 from editor.tool import Tool
 from controls.action import Action
 
@@ -15,9 +15,6 @@ def handle_input(program):
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             handle_mouse(program, event)
-
-        elif event.type == pygame.MOUSEWHEEL:
-            change_exit_capacity(program.simulation, pygame.mouse.get_pos(), event.y)
 
 
 def handle_keyboard(program, event):
