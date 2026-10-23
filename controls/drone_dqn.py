@@ -203,11 +203,15 @@ class DQNDroneController:
                     state[0, patch_y, patch_x] = 1.0
                     continue
 
-                if world.map_grid.get(x, y) == CellType.WALL:
+                cell_type = world.simulation_grid.get(x, y)
+                if cell_type == CellType.WALL:
                     state[0, patch_y, patch_x] = 1.0
-                if world.occupancy_grid.get(x, y) is not None:
+                if cell_type == CellType.EVACUEE:
                     state[1, patch_y, patch_x] = 1.0
-                if world.drone_occupancy_grid.get(x, y) not in (None, drone):
+                if (
+                    cell_type == CellType.DRONE
+                    and (x, y) != (drone.grid_x, drone.grid_y)
+                ):
                     state[2, patch_y, patch_x] = 1.0
 
                 cluster_id = cluster_grid.get(x, y)
@@ -215,7 +219,7 @@ class DQNDroneController:
                     state[3, patch_y, patch_x] = 1.0
                 if target_cluster is not None and cluster_id == target_cluster:
                     state[4, patch_y, patch_x] = 1.0
-                if world.map_grid.get(x, y) == CellType.EXIT:
+                if cell_type == CellType.EXIT:
                     state[5, patch_y, patch_x] = 1.0
 
                 state[6, patch_y, patch_x] = direction_x
@@ -234,10 +238,6 @@ class DQNDroneController:
             x = drone.grid_x + dx
             y = drone.grid_y + dy
             if not world.can_move_to(x, y):
-                continue
-            if world.occupancy_grid.get(x, y) is not None:
-                continue
-            if world.drone_occupancy_grid.get(x, y) not in (None, drone):
                 continue
             legal_actions.append(action)
 

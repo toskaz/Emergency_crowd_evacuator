@@ -22,8 +22,20 @@ class Grid_World:
 
     def __init__(self, map_grid=None):
         self.map_grid = map_grid if map_grid is not None else Grid.from_image(image_path)
+        self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+        self.simulation_grid = Grid(self.map_grid.width, self.map_grid.height, CellType.EMPTY)
+        self.rebuild_map_data()
+        self.rebuild_simulation_grid()
+
+    def rebuild_map_data(self):
+        self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+        for y in range(self.map_grid.height):
+            for x in range(self.map_grid.width):
+                if self.map_grid.get(x, y) == CellType.WALL:
+                    self.wall_grid.set(x, y, CellType.WALL)
+
         self.cluster_grid = ClusterGrid(self.map_grid)
         self.navigation_graph = NavigationGraphx(self.cluster_grid)
         self.distance_map = self.build_distance_map()
@@ -48,9 +60,8 @@ class Grid_World:
             return
 
         self.map_grid.set(x, y, cell_type)
-        self.cluster_grid = ClusterGrid(self.map_grid)
-        self.navigation_graph = NavigationGraphx(self.cluster_grid)
-        self.distance_map = self.build_distance_map()
+        self.rebuild_map_data()
+        self.rebuild_simulation_grid()
 
     def build_distance_map(self):
         width = self.map_grid.width
@@ -86,7 +97,22 @@ class Grid_World:
         return self.map_grid.get(x, y) == CellType.EXIT
 
     def can_move_to(self, x, y):
-        return self.map_grid.in_bounds(x, y) and self.map_grid.get(x, y) != CellType.WALL
+        return self.map_grid.in_bounds(x, y) and self.wall_grid.get(x, y) != CellType.WALL
+
+    def rebuild_simulation_grid(self, evacuees=(), drones=()):
+        self.simulation_grid = Grid(self.map_grid.width, self.map_grid.height)
+        for y in range(self.map_grid.height):
+            for x in range(self.map_grid.width):
+                cell_type = self.map_grid.get(x, y)
+                if cell_type in (CellType.EVACUEE, CellType.DRONE):
+                    cell_type = CellType.EMPTY
+                self.simulation_grid.set(x, y, cell_type)
+
+        for evacuee in evacuees:
+            self.simulation_grid.set(evacuee.grid_x, evacuee.grid_y, CellType.EVACUEE)
+
+        for drone in drones:
+            self.simulation_grid.set(drone.grid_x, drone.grid_y, CellType.DRONE)
 
     def add_evacuee(self, evacuee):
         self.occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, evacuee)

@@ -1,6 +1,6 @@
 import pygame
 from utils.config import drawing_size
-from graphics.renderer import draw_map, draw_ui, draw_evacuees, draw_drones, draw_navigation, draw_clusters, draw_cluster_edges
+from graphics.renderer import draw_map, draw_ui, draw_render_entities, draw_spawn_markers, draw_navigation, draw_clusters, draw_cluster_edges
 
 
 class Window:
@@ -19,7 +19,7 @@ class Window:
 
     def draw(self, grid_world, evacuees, drones, selected_tool, show_grid,
             status_lines=(), show_navigation=False, drone_routes=None,
-            show_cluster_overlay=True):
+            show_cluster_overlay=True, show_spawn_markers=True):
         draw_map(
             self.screen,
             grid_world.map_grid,
@@ -39,8 +39,10 @@ class Window:
             status_lines
         )
 
-        draw_evacuees(self.screen, evacuees)
-        draw_drones(self.screen, drones)
+        if show_spawn_markers:
+            draw_spawn_markers(self.screen, grid_world.map_grid)
+
+        draw_render_entities(self.screen, grid_world.simulation_grid)
 
         pygame.display.flip()
 

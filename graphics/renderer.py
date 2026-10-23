@@ -11,6 +11,8 @@ CELL_COLORS = {
     CellType.EMPTY: Color.EMPTY.value,
     CellType.WALL: Color.WALL.value,
     CellType.EXIT: Color.EXIT.value,
+    CellType.EVACUEE: Color.EMPTY.value,
+    CellType.DRONE: Color.EMPTY.value,
 }
 
 
@@ -99,32 +101,43 @@ def draw_navigation(screen, navigation, drone_routes):
             pygame.draw.lines(screen, Color.DRONE.value, False, points, 2)
 
 
-def draw_evacuees(screen, evacuees):
+def draw_render_entities(screen, simulation_grid):
+    for cell_type, color in (
+        (CellType.EVACUEE, Color.EVACUEE.value),
+        (CellType.DRONE, Color.DRONE.value),
+    ):
+        for y in range(simulation_grid.height):
+            for x in range(simulation_grid.width):
+                if simulation_grid.get(x, y) != cell_type:
+                    continue
 
-    for evacuee in evacuees:
+                pixel_x, pixel_y = grid_to_pixel_center(x, y)
+                pygame.draw.circle(
+                    screen,
+                    color,
+                    (pixel_x, pixel_y),
+                    drawing_size // 2
+                )
 
-        pixel_x, pixel_y = grid_to_pixel_center(evacuee.grid_x,evacuee.grid_y)
+def draw_spawn_markers(screen, map_grid):
+    marker_colors = {
+        CellType.EVACUEE: Color.EVACUEE.value,
+        CellType.DRONE: Color.DRONE.value,
+    }
 
-        pygame.draw.circle(
-            screen,
-            Color.EVACUEE.value,
-            (pixel_x, pixel_y),
-            drawing_size // 2
-        )
+    for y in range(map_grid.height):
+        for x in range(map_grid.width):
+            color = marker_colors.get(map_grid.get(x, y))
+            if color is None:
+                continue
 
-
-def draw_drones(screen, drones):
-
-    for drone in drones:
-
-        pixel_x, pixel_y = grid_to_pixel_center(drone.grid_x, drone.grid_y)
-
-        pygame.draw.circle(
-            screen,
-            Color.DRONE.value,
-            (pixel_x, pixel_y),
-            drawing_size // 2
-        )
+            pixel_x, pixel_y = grid_to_pixel_center(x, y)
+            pygame.draw.circle(
+                screen,
+                color,
+                (pixel_x, pixel_y),
+                drawing_size // 2
+            )
 
 def cluster_color(x, y):
     cluster_width = 2 * cluster_size + 1

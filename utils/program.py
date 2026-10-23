@@ -39,6 +39,7 @@ class Program:
                 break
 
             if self.simulation_running and not was_running:
+                self.simulation.start()
                 self.plan_drone_routes()
 
             if self.simulation_running:
@@ -65,7 +66,8 @@ class Program:
                 self.status_lines(),
                 self.show_navigation,
                 self.drone_routes,
-                self.show_cluster_overlay
+                self.show_cluster_overlay,
+                not self.simulation.started,
             )
 
             clock.tick(60)
