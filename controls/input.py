@@ -1,14 +1,14 @@
 import pygame
 
 
-def handle_input(program):
+def handle_input(context):
     for event in pygame.event.get():
 
         if event.type == pygame.QUIT:
-            program.window.close()
+            context.window.close()
 
         elif event.type == pygame.KEYDOWN:
-            program.state.handle_key_event(program, event.key)
+            context.state.handle_key_event(context, event.key)
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            program.state.handle_mouse(program, event)
+            context.state.handle_mouse(context, event)

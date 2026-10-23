@@ -8,9 +8,8 @@ from editor.tool import Tool
 
 class ProgramState:
     name = "state"
-    uses_simulation_grid = False
     render_options_enabled = False
-    show_tool = False
+    selected_tool = None
     key_bindings = ()
 
     def enter(self, program):
@@ -28,43 +27,44 @@ class ProgramState:
     def update(self, program):
         pass
 
-    def render(self, program):
-        program.window.draw(
-            program.simulation.grid_world,
-            program.simulation.evacuees,
-            program.simulation.drones,
-            program.selected_tool,
-            program.show_grid,
-            program.status_lines(),
-            program.show_drone_routes and self.render_options_enabled,
-            program.drone_routes,
-            program.show_cluster_overlay and self.render_options_enabled,
-            program.show_cluster_connections and self.render_options_enabled,
-            self.uses_simulation_grid,
-            self.key_bindings,
-            self.show_tool,
+    def status_lines(self, context):
+        mode = (
+            "CNN-DQN + cluster route"
+            if context.simulation_options.autonomous_drones
+            else "manual"
         )
+        evacuated = context.simulation.evacuated_count
+        total = evacuated + len(context.simulation.evacuees)
+
+        return [
+            f"State: {self.name}",
+            f"Drones: {mode}",
+            f"Step: {context.simulation.step_count}",
+            f"Evacuated: {evacuated}/{total}",
+        ]
+
+    def render(self, program):
+        program.window.draw_simulation(program, self.key_bindings)
 
     def handle_key_event(self, program, key):
         if key == pygame.K_g:
-            program.show_grid = not program.show_grid
+            program.view_options.show_grid = not program.view_options.show_grid
             return
         if self.render_options_enabled:
             if key == pygame.K_c:
-                program.show_cluster_overlay = not program.show_cluster_overlay
+                program.view_options.show_clusters = not program.view_options.show_clusters
                 return
             if key == pygame.K_b:
-                program.show_cluster_connections = not program.show_cluster_connections
+                program.view_options.show_cluster_connections = not program.view_options.show_cluster_connections
                 return
             if key == pygame.K_v:
-                program.show_drone_routes = not program.show_drone_routes
+                program.view_options.show_drone_routes = not program.view_options.show_drone_routes
                 return
         self.handle_key(program, key)
 
 
 class EditorState(ProgramState):
     name = "editor"
-    show_tool = True
     key_bindings = (
         "E: overview",
         "1-4: select tool",
@@ -73,30 +73,36 @@ class EditorState(ProgramState):
         "G: toggle grid",
     )
 
+    def __init__(self):
+        self.selected_tool = Tool.WALL
+
     def enter(self, program):
-        program.show_cluster_overlay = False
-        program.show_cluster_connections = False
-        program.show_drone_routes = False
+        program.view_options.show_clusters = False
+        program.view_options.show_cluster_connections = False
+        program.view_options.show_drone_routes = False
 
     def handle_key(self, program, key):
         if key == pygame.K_e:
             program.transition_to(OverviewState())
         elif key == pygame.K_1:
-            program.selected_tool = Tool.WALL
+            self.selected_tool = Tool.WALL
         elif key == pygame.K_2:
-            program.selected_tool = Tool.EVACUEE
+            self.selected_tool = Tool.EVACUEE
         elif key == pygame.K_3:
-            program.selected_tool = Tool.EXIT
+            self.selected_tool = Tool.EXIT
         elif key == pygame.K_4:
-            program.selected_tool = Tool.DRONE
+            self.selected_tool = Tool.DRONE
 
     def handle_mouse(self, program, event):
         handle_map_editor(
             program.simulation,
             event.pos,
             event.button,
-            program.selected_tool,
+            self.selected_tool,
         )
+
+    def render(self, program):
+        program.window.draw_editor(program, self.selected_tool, self.key_bindings)
 
 
 class OverviewState(ProgramState):
@@ -124,10 +130,12 @@ class OverviewState(ProgramState):
         elif key == pygame.K_p:
             program.transition_to(SimulationRunningState())
 
+    def render(self, program):
+        program.window.draw_overview(program, self.key_bindings)
+
 
 class SimulationRunningState(ProgramState):
     name = "simulation_running"
-    uses_simulation_grid = True
     render_options_enabled = True
     key_bindings = (
         "P: pause",
@@ -149,35 +157,35 @@ class SimulationRunningState(ProgramState):
         elif key == pygame.K_x:
             program.transition_to(ResultsState())
         elif key == pygame.K_f:
-            program.autonomous_drones = not program.autonomous_drones
+            program.simulation_options.autonomous_drones = not program.simulation_options.autonomous_drones
         elif key == pygame.K_w:
-            program.action = Action.UP
+            program.simulation_options.action = Action.UP
         elif key == pygame.K_s:
-            program.action = Action.DOWN
+            program.simulation_options.action = Action.DOWN
         elif key == pygame.K_a:
-            program.action = Action.LEFT
+            program.simulation_options.action = Action.LEFT
         elif key == pygame.K_d:
-            program.action = Action.RIGHT
+            program.simulation_options.action = Action.RIGHT
 
     def update(self, program):
-        evacuee_actions = get_actions(program.simulation.evacuees, program.action)
+        options = program.simulation_options
+        evacuee_actions = get_actions(program.simulation.evacuees, options.action)
 
-        if program.autonomous_drones:
+        if options.autonomous_drones:
             drone_actions = program.drone_controller.get_actions(
                 program.simulation,
                 program.drone_routes,
             )
         else:
-            drone_actions = get_actions(program.simulation.drones, program.action)
+            drone_actions = get_actions(program.simulation.drones, options.action)
 
         program.simulation.step(evacuee_actions, drone_actions)
-        if program.autonomous_drones:
+        if options.autonomous_drones:
             program.drone_controller.learn(program.simulation, program.drone_routes)
 
 
 class SimulationPausedState(ProgramState):
     name = "simulation_paused"
-    uses_simulation_grid = True
     render_options_enabled = True
     key_bindings = (
         "P: resume",
@@ -197,7 +205,6 @@ class SimulationPausedState(ProgramState):
 
 class SimulationEditorState(ProgramState):
     name = "simulation_editor"
-    uses_simulation_grid = True
     render_options_enabled = True
     key_bindings = (
         "Enter: return to pause",
@@ -214,7 +221,6 @@ class SimulationEditorState(ProgramState):
 
 class ResultsState(ProgramState):
     name = "results"
-    uses_simulation_grid = True
     render_options_enabled = True
     key_bindings = (
         "Enter: return to overview",

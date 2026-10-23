@@ -56,39 +56,6 @@ class Simulation:
 
         self.started = True
 
-    def add_evacuee(self, grid_x, grid_y):
-        evacuee = Evacuee(grid_x, grid_y)
-
-        self.evacuees.append(evacuee)
-        self.grid_world.add_evacuee(evacuee)
-        self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
-
-    def remove_evacuee(self, grid_x, grid_y):
-        evacuee = self.grid_world.evacuee_occupancy_grid.get(grid_x, grid_y)
-
-        if evacuee is None:
-            return
-
-        self.evacuees.remove(evacuee)
-        self.grid_world.remove_evacuee(evacuee)
-        self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
-
-    def add_drone(self, grid_x, grid_y):
-        drone = Drone(grid_x, grid_y)
-        self.drones.append(drone)
-        self.grid_world.add_drone(drone)
-        self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
-
-    def remove_drone(self, grid_x, grid_y):
-        drone = self.grid_world.drone_occupancy_grid.get(grid_x, grid_y)
-
-        if drone is None:
-            return
-
-        self.drones.remove(drone)
-        self.grid_world.remove_drone(drone)
-        self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
-
     def touching_exit(self, evacuee):
         return self.grid_world.is_exit(evacuee.grid_x, evacuee.grid_y)
 

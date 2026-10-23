@@ -15,6 +15,11 @@ CELL_COLORS = {
     CellType.DRONE: Color.EMPTY.value,
 }
 
+ENTITY_COLORS = {
+    CellType.EVACUEE: Color.EVACUEE.value,
+    CellType.DRONE: Color.DRONE.value,
+}
+
 
 TOOL_COLORS = {
     Tool.WALL: Color.WALL.value,
@@ -40,6 +45,15 @@ def draw_map(screen, grid, show_grid):
                 color,
                 (pos_x, pos_y, drawing_size, drawing_size)
             )
+
+            marker_color = ENTITY_COLORS.get(value)
+            if marker_color is not None:
+                pygame.draw.circle(
+                    screen,
+                    marker_color,
+                    grid_to_pixel_center(x, y),
+                    drawing_size // 2,
+                )
 
             # Draw the grid line
             if show_grid:
@@ -68,8 +82,8 @@ def draw_key_bindings(screen, font, key_bindings):
         top = text_rect.bottom + 3
 
 
-def draw_ui(screen, font, selected_tool, status_lines=(), key_bindings=(),
-            show_tool=False, key_font=None):
+def draw_ui(screen, font, selected_tool=None, status_lines=(), key_bindings=(),
+            key_font=None):
     tool_names = {
         Tool.WALL: "WALL",
         Tool.EVACUEE: "EVACUEE",
@@ -79,7 +93,7 @@ def draw_ui(screen, font, selected_tool, status_lines=(), key_bindings=(),
 
     padding = 10
     top = padding
-    if show_tool:
+    if selected_tool is not None:
         tool_name = tool_names[selected_tool]
         tool_color = TOOL_COLORS[selected_tool]
         text = font.render(f"Tool: {tool_name}", True, tool_color)
@@ -108,44 +122,6 @@ def draw_navigation(screen, navigation, drone_routes):
         if len(points) > 1:
             pygame.draw.lines(screen, Color.DRONE.value, False, points, 2)
 
-
-def draw_render_entities(screen, simulation_grid):
-    for cell_type, color in (
-        (CellType.EVACUEE, Color.EVACUEE.value),
-        (CellType.DRONE, Color.DRONE.value),
-    ):
-        for y in range(simulation_grid.height):
-            for x in range(simulation_grid.width):
-                if simulation_grid.get(x, y) != cell_type:
-                    continue
-
-                pixel_x, pixel_y = grid_to_pixel_center(x, y)
-                pygame.draw.circle(
-                    screen,
-                    color,
-                    (pixel_x, pixel_y),
-                    drawing_size // 2
-                )
-
-def draw_spawn_markers(screen, map_grid):
-    marker_colors = {
-        CellType.EVACUEE: Color.EVACUEE.value,
-        CellType.DRONE: Color.DRONE.value,
-    }
-
-    for y in range(map_grid.height):
-        for x in range(map_grid.width):
-            color = marker_colors.get(map_grid.get(x, y))
-            if color is None:
-                continue
-
-            pixel_x, pixel_y = grid_to_pixel_center(x, y)
-            pygame.draw.circle(
-                screen,
-                color,
-                (pixel_x, pixel_y),
-                drawing_size // 2
-            )
 
 def cluster_color(x, y):
     cluster_width = 2 * cluster_size + 1

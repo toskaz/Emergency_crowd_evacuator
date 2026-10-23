@@ -1,6 +1,6 @@
 import pygame
 from utils.config import drawing_size
-from graphics.renderer import draw_map, draw_ui, draw_key_bindings, draw_render_entities, draw_spawn_markers, draw_navigation, draw_clusters, draw_cluster_edges
+from graphics.renderer import draw_map, draw_ui, draw_key_bindings, draw_navigation, draw_clusters, draw_cluster_edges
 
 
 class Window:
@@ -17,41 +17,57 @@ class Window:
         self.small_font = pygame.font.Font(None, 18)
         self.is_open = True
 
-    def draw(self, grid_world, evacuees, drones, selected_tool, show_grid,
-            status_lines=(), show_drone_routes=False, drone_routes=None,
-            show_cluster_overlay=True, show_cluster_connections=True,
-            simulation_view=False, key_bindings=(), show_tool=False):
-        grid = grid_world.simulation_grid if simulation_view else grid_world.map_grid
-        draw_map(
-            self.screen,
-            grid,
-            show_grid
+    def draw_editor(self, context, selected_tool, key_bindings):
+        self._draw_view(
+            context,
+            context.simulation.grid_world.map_grid,
+            key_bindings,
+            selected_tool,
         )
-        if show_cluster_connections:
-            draw_cluster_edges(self.screen, grid_world.cluster_grid)
-        if show_cluster_overlay:
-            draw_clusters(self.screen, grid_world.cluster_grid, font=self.small_font)
 
-        if show_drone_routes:
-            draw_navigation(self.screen, grid_world.navigation_graph, drone_routes or {})
+    def draw_overview(self, context, key_bindings):
+        self._draw_view(
+            context,
+            context.simulation.grid_world.map_grid,
+            key_bindings,
+        )
 
+    def draw_simulation(self, context, key_bindings):
+        self._draw_view(
+            context,
+            context.simulation.grid_world.simulation_grid,
+            key_bindings,
+        )
+
+    def _draw_view(self, context, grid, key_bindings, selected_tool=None):
+        self._draw_grid(context, grid)
+        if context.state.render_options_enabled:
+            self._draw_overlays(context)
+        self._draw_ui(context, key_bindings, selected_tool)
+        pygame.display.flip()
+
+    def _draw_grid(self, context, grid):
+        draw_map(self.screen, grid, context.view_options.show_grid)
+
+    def _draw_overlays(self, context):
+        world = context.simulation.grid_world
+        options = context.view_options
+        if options.show_cluster_connections:
+            draw_cluster_edges(self.screen, world.cluster_grid)
+        if options.show_clusters:
+            draw_clusters(self.screen, world.cluster_grid, font=self.small_font)
+        if options.show_drone_routes:
+            draw_navigation(self.screen, world.navigation_graph, context.drone_routes)
+
+    def _draw_ui(self, context, key_bindings, selected_tool=None):
         draw_ui(
             self.screen,
             self.font,
             selected_tool,
-            status_lines,
+            context.state.status_lines(context),
             key_bindings,
-            show_tool,
             self.small_font,
         )
-
-        if not simulation_view:
-            draw_spawn_markers(self.screen, grid_world.map_grid)
-
-        if simulation_view:
-            draw_render_entities(self.screen, grid_world.simulation_grid)
-
-        pygame.display.flip()
 
     def close(self):
         self.is_open = False
