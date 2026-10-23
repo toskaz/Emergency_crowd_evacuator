@@ -14,12 +14,24 @@ class Simulation:
         self.step_count = 0
         self.evacuated_count = 0
         self.started = False
+        self.prepared = False
 
-    def start(self):
-        if self.started:
-            return
+    def prepare(self):
+        self.evacuees.clear()
+        self.drones.clear()
+        self.step_count = 0
+        self.evacuated_count = 0
+        self.started = False
 
         map_grid = self.grid_world.map_grid
+        self.grid_world.evacuee_occupancy_grid = type(self.grid_world.map_grid)(
+            map_grid.width, map_grid.height, None
+        )
+        self.grid_world.drone_occupancy_grid = type(self.grid_world.map_grid)(
+            map_grid.width, map_grid.height, None
+        )
+        self.grid_world.rebuild_map_data()
+
         for y in range(map_grid.height):
             for x in range(map_grid.width):
                 cell_type = map_grid.get(x, y)
@@ -32,9 +44,17 @@ class Simulation:
                     self.drones.append(drone)
                     self.grid_world.add_drone(drone)
 
-        self.started = True
-        self.grid_world.rebuild_map_data()
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
+        self.prepared = True
+
+    def start(self):
+        if self.started:
+            return
+
+        if not self.prepared:
+            self.prepare()
+
+        self.started = True
 
     def add_evacuee(self, grid_x, grid_y):
         evacuee = Evacuee(grid_x, grid_y)
@@ -44,7 +64,7 @@ class Simulation:
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
 
     def remove_evacuee(self, grid_x, grid_y):
-        evacuee = self.grid_world.occupancy_grid.get(grid_x, grid_y)
+        evacuee = self.grid_world.evacuee_occupancy_grid.get(grid_x, grid_y)
 
         if evacuee is None:
             return

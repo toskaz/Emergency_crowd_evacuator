@@ -23,11 +23,12 @@ class Grid_World:
     def __init__(self, map_grid=None):
         self.map_grid = map_grid if map_grid is not None else Grid.from_image(image_path)
         self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
-        self.occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+        self.evacuee_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.simulation_grid = Grid(self.map_grid.width, self.map_grid.height, CellType.EMPTY)
-        self.rebuild_map_data()
-        self.rebuild_simulation_grid()
+        self.cluster_grid = None
+        self.navigation_graph = None
+        self.distance_map = None
 
     def rebuild_map_data(self):
         self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
@@ -60,8 +61,6 @@ class Grid_World:
             return
 
         self.map_grid.set(x, y, cell_type)
-        self.rebuild_map_data()
-        self.rebuild_simulation_grid()
 
     def build_distance_map(self):
         width = self.map_grid.width
@@ -115,10 +114,10 @@ class Grid_World:
             self.simulation_grid.set(drone.grid_x, drone.grid_y, CellType.DRONE)
 
     def add_evacuee(self, evacuee):
-        self.occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, evacuee)
+        self.evacuee_occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, evacuee)
 
     def remove_evacuee(self, evacuee):
-        self.occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, None)
+        self.evacuee_occupancy_grid.set(evacuee.grid_x, evacuee.grid_y, None)
 
     def add_drone(self, drone):
         self.drone_occupancy_grid.set(drone.grid_x, drone.grid_y, drone)
@@ -183,7 +182,7 @@ class Grid_World:
             occupancy_grid.set(x, y, entity)
 
     def step_evacuees(self, evacuees, actions):
-        return self._step_entities(evacuees, actions, self.occupancy_grid)
+        return self._step_entities(evacuees, actions, self.evacuee_occupancy_grid)
 
     def step_drones(self, drones, actions):
         return self._step_entities(drones, actions, self.drone_occupancy_grid)

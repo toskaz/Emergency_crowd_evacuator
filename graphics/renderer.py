@@ -51,7 +51,25 @@ def draw_map(screen, grid, show_grid):
                 )
 
 
-def draw_ui(screen, font, selected_tool, status_lines=()):
+def draw_key_bindings(screen, font, key_bindings):
+    if not key_bindings:
+        return
+
+    padding = 10
+    title = font.render("Controls", True, Color.WALL.value)
+    title_rect = title.get_rect(topleft=(padding, padding))
+    screen.blit(title, title_rect)
+
+    top = title_rect.bottom + 5
+    for line in key_bindings:
+        text = font.render(line, True, Color.WALL.value)
+        text_rect = text.get_rect(topleft=(padding, top))
+        screen.blit(text, text_rect)
+        top = text_rect.bottom + 3
+
+
+def draw_ui(screen, font, selected_tool, status_lines=(), key_bindings=(),
+            show_tool=False, key_font=None):
     tool_names = {
         Tool.WALL: "WALL",
         Tool.EVACUEE: "EVACUEE",
@@ -59,33 +77,23 @@ def draw_ui(screen, font, selected_tool, status_lines=()):
         Tool.DRONE: "DRONE",
     }
 
-    tool_name = tool_names[selected_tool]
-    tool_color = TOOL_COLORS[selected_tool]
-
-    text = font.render(
-        f"Tool: {tool_name}",
-        True,
-        tool_color
-    )
-
     padding = 10
-
-    text_rect = text.get_rect(
-        top=padding,
-        right=screen.get_width() - padding
-    )
-
-    screen.blit(text, text_rect)
+    top = padding
+    if show_tool:
+        tool_name = tool_names[selected_tool]
+        tool_color = TOOL_COLORS[selected_tool]
+        text = font.render(f"Tool: {tool_name}", True, tool_color)
+        text_rect = text.get_rect(top=padding, right=screen.get_width() - padding)
+        screen.blit(text, text_rect)
+        top = text_rect.bottom + 4
 
     for line in status_lines:
         text = font.render(line, True, Color.WALL.value)
-
-        text_rect = text.get_rect(
-            top=text_rect.bottom + 4,
-            right=screen.get_width() - padding
-        )
-
+        text_rect = text.get_rect(top=top, right=screen.get_width() - padding)
         screen.blit(text, text_rect)
+        top = text_rect.bottom + 4
+
+    draw_key_bindings(screen, key_font or font, key_bindings)
 
 
 def draw_navigation(screen, navigation, drone_routes):
