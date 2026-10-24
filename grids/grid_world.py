@@ -6,6 +6,7 @@ from grids.cluster_grid import ClusterGrid
 from grids.grid import Grid
 from map.cell import CellType
 from map.exit import find_exits
+from map.exit_detector import ExitDetector
 from utils.config import image_path
 
 
@@ -22,6 +23,7 @@ class Grid_World:
 
     def __init__(self, map_grid=None):
         self.map_grid = map_grid if map_grid is not None else Grid.from_image(image_path)
+        ExitDetector().mark_exits_on_grid(self.map_grid)
         self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.evacuee_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
