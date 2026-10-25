@@ -8,7 +8,7 @@ class NavigationGraphx:
         self.cluster_grid = cluster_grid
 
         self.G = nx.Graph()
-        self.G.add_nodes_from(self.cluster_grid.clusters)
+        self.G.add_nodes_from(range(len(self.cluster_grid.clusters)))
         self.G.add_edges_from(self.cluster_grid.adjacent_cluster_pairs)
         
     def node_at(self, cell):

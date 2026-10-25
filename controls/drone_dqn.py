@@ -7,6 +7,7 @@ from torch import nn
 
 from controls.action import Action
 from map.cell import CellType
+from grids.cluster import ClusterType
 
 
 ACTION_DIRECTIONS = {
@@ -167,22 +168,22 @@ class DQNDroneController:
         route_ids = set(route[max(0, route_cursor - 1):]) if route else set()
         target_cluster = remaining_route[0] if remaining_route else None
 
-        if target_cluster in cluster_grid.exit_clusters:
-            target_cells = cluster_grid.clusters.get(target_cluster, [])
-        elif target_cluster is not None:
-            target_cells = cluster_grid.clusters.get(target_cluster, [])
+        if target_cluster is not None:
+            target_cells = cluster_grid.clusters[target_cluster].cells
         else:
             target_cells = [
                 cell
-                for cluster_id in cluster_grid.exit_clusters
-                for cell in cluster_grid.clusters.get(cluster_id, [])
+                for cluster in cluster_grid.clusters
+                if cluster.type is ClusterType.EXIT
+                for cell in cluster.cells
             ]
 
         if not target_cells:
             target_cells = [
                 cell
-                for cluster_id in cluster_grid.exit_clusters
-                for cell in cluster_grid.clusters.get(cluster_id, [])
+                for cluster in cluster_grid.clusters
+                if cluster.type is ClusterType.EXIT
+                for cell in cluster.cells
             ]
 
         state = np.zeros((CHANNELS, PATCH_SIZE, PATCH_SIZE), dtype=np.float32)

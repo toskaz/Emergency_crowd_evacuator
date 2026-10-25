@@ -2,6 +2,7 @@ from map.cell import CellType
 from graphics.colors import Color
 import pygame
 from editor.tool import Tool
+from grids.cluster import ClusterType
 from grids.coordinates import grid_to_pixel, grid_to_pixel_center
 from utils.config import cluster_size, drawing_size
 
@@ -115,7 +116,12 @@ def draw_navigation(screen, navigation, drone_routes):
 
     for route in drone_routes.values():
         points = [
-            tuple(round(value) for value in grid_to_pixel_center(*cluster_grid.get_centroid(cluster_id)))
+            tuple(
+                round(value)
+                for value in grid_to_pixel_center(
+                    *cluster_grid.clusters[cluster_id].get_centroid()
+                )
+            )
             for cluster_id in route
         ]
 
@@ -131,8 +137,12 @@ def cluster_color(x, y):
 
 def draw_cluster_edges(screen, cluster_grid):
     for first_cluster, second_cluster in cluster_grid.adjacent_cluster_pairs:
-        first_center = grid_to_pixel_center(*cluster_grid.get_centroid(first_cluster))
-        second_center = grid_to_pixel_center(*cluster_grid.get_centroid(second_cluster))
+        first_center = grid_to_pixel_center(
+            *cluster_grid.clusters[first_cluster].get_centroid()
+        )
+        second_center = grid_to_pixel_center(
+            *cluster_grid.clusters[second_cluster].get_centroid()
+        )
         pygame.draw.line(
             screen,
             Color.DRONE.value,
@@ -156,7 +166,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
             px, py = grid_to_pixel(x, y)
             color = (
                 Color.EXIT.value
-                if cluster_id in overlay_grid.exit_clusters
+                if overlay_grid.clusters[cluster_id].type is ClusterType.EXIT
                 else cluster_color(x, y)
             )
 
@@ -167,11 +177,11 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
     if font is None:
         font = pygame.font.Font(None, 18)
 
-    for cluster_id, cluster_cells in overlay_grid.clusters.items():
-        if not cluster_cells:
+    for cluster_id, cluster in enumerate(overlay_grid.clusters):
+        if not cluster.cells:
             continue
 
-        center_x, center_y = overlay_grid.get_centroid(cluster_id)
+        center_x, center_y = cluster.get_centroid()
         pixel_x, pixel_y = grid_to_pixel_center(center_x, center_y)
         label = font.render(str(cluster_id), True, Color.BACKGROUND.value)
         label_rect = label.get_rect(center=(round(pixel_x), round(pixel_y)))

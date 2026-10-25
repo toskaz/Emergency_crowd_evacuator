@@ -1,19 +1,19 @@
-from map.cell import CellType
-from grids.grid import Grid
-from utils.config import cluster_size
 from collections import deque
+
+from grids.cluster import Cluster, ClusterType
+from grids.grid import Grid
+from map.cell import CellType
+from utils.config import cluster_size
 
 
 class ClusterGrid:
     def __init__(self, grid):
         self.grid = Grid(grid.width, grid.height)
-        self.clusters = {}
-        self.exit_clusters = set()
+        self.clusters = []
         self.adjacent_cluster_pairs = set()
         self.build(grid)
 
     def build(self, grid):
-        cluster_id = -1
         cluster_width = 2 * cluster_size + 1
 
         for block_y in range(0, grid.height, cluster_width):
@@ -26,14 +26,20 @@ class ClusterGrid:
                         if grid.get(x, y) == CellType.WALL:
                             self.grid.set(x, y, -1)
                         elif grid.get(x, y) != CellType.EXIT and self.grid.get(x, y) is None:
-                            cluster_id += 1
-                            self.clusters[cluster_id] = []
+                            cluster_id = self._add_cluster()
                             self.fill(grid, x, y, origin_x, origin_y, cluster_id)
 
-        cluster_id = self.add_exit_sectors(grid, cluster_id)
+        self.add_exit_sectors(grid)
+        for cluster in self.clusters:
+            cluster.calculate_centroid()
         self.build_adjacent_cluster_pairs()
 
-    def add_exit_sectors(self, grid, cluster_id):
+    def _add_cluster(self, cluster_type=ClusterType.NORMAL):
+        cluster_id = len(self.clusters)
+        self.clusters.append(Cluster(type=cluster_type))
+        return cluster_id
+
+    def add_exit_sectors(self, grid):
         seen = set()
 
         for y in range(grid.height):
@@ -41,16 +47,14 @@ class ClusterGrid:
                 if grid.get(x, y) != CellType.EXIT or (x, y) in seen:
                     continue
 
-                cluster_id += 1
-                self.clusters[cluster_id] = []
-                self.exit_clusters.add(cluster_id)
+                cluster_id = self._add_cluster(ClusterType.EXIT)
                 pending = deque([(x, y)])
                 seen.add((x, y))
 
                 while pending:
                     current_x, current_y = pending.popleft()
                     self.grid.set(current_x, current_y, cluster_id)
-                    self.clusters[cluster_id].append((current_x, current_y))
+                    self.clusters[cluster_id].cells.append((current_x, current_y))
 
                     for neighbor_x, neighbor_y in (
                         (current_x + 1, current_y),
@@ -66,8 +70,6 @@ class ClusterGrid:
                         ):
                             seen.add(neighbor)
                             pending.append(neighbor)
-
-        return cluster_id
 
     def fill(self, grid, x, y, origin_x, origin_y, cluster_id):
         pending = [(x, y)]
@@ -95,7 +97,7 @@ class ClusterGrid:
                 continue
 
             self.grid.set(current_x, current_y, cluster_id)
-            self.clusters[cluster_id].append((current_x, current_y))
+            self.clusters[cluster_id].cells.append((current_x, current_y))
 
             for dx, dy in neighbors:
                 pending.append((current_x + dx, current_y + dy))
@@ -106,27 +108,16 @@ class ClusterGrid:
     def build_adjacent_cluster_pairs(self):
         self.adjacent_cluster_pairs = set()
 
-        for y in range(self.grid.height):
-            for x in range(self.grid.width):
-                cluster_id = self.grid.get(x, y)
-                if cluster_id not in self.clusters:
-                    continue
-
-                for dx, dy in ((1, 0), (0, 1)):
-                    neighbor_x, neighbor_y = x + dx, y + dy
+        for cluster_id, cluster in enumerate(self.clusters):
+            for x, y in cluster.cells:
+                for neighbor_x, neighbor_y in ((x + 1, y), (x, y + 1)):
                     if not self.grid.in_bounds(neighbor_x, neighbor_y):
                         continue
 
                     neighbor_id = self.grid.get(neighbor_x, neighbor_y)
-                    if neighbor_id in self.clusters and neighbor_id != cluster_id:
-                        self.adjacent_cluster_pairs.add(
-                            (min(cluster_id, neighbor_id), max(cluster_id, neighbor_id))
-                        )
+                    if neighbor_id is None or neighbor_id < 0 or neighbor_id == cluster_id:
+                        continue
 
-    def get_centroid(self, cluster_id):
-        cells = self.clusters[cluster_id]
-        sum_x = sum(cell[0] for cell in cells)
-        sum_y = sum(cell[1] for cell in cells)
-        count = len(cells)
-
-        return (sum_x / count, sum_y / count)
+                    self.adjacent_cluster_pairs.add(
+                        (min(cluster_id, neighbor_id), max(cluster_id, neighbor_id))
+                    )
