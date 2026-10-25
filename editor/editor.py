@@ -1,4 +1,3 @@
-from map.cell import CellType
 from editor.tool import Tool
 from grids.coordinates import pixel_to_grid
 
@@ -22,18 +21,20 @@ def handle_map_editor(simulation, mouse_pos, button, selected_tool):
 
 def place(simulation, grid_x, grid_y, selected_tool):
 
+    map_grid = simulation.grid_world.map_grid
+
     if selected_tool == Tool.WALL:
-        simulation.grid_world.set_cell(grid_x, grid_y, CellType.WALL)
+        map_grid.add_wall(grid_x, grid_y)
 
     elif selected_tool == Tool.EXIT:
-        simulation.grid_world.set_cell(grid_x, grid_y, CellType.EXIT)
+        map_grid.add_exit(grid_x, grid_y)
 
     elif selected_tool == Tool.EVACUEE:
-        simulation.grid_world.set_cell(grid_x, grid_y, CellType.EVACUEE)
+        map_grid.add_evacuee(grid_x, grid_y)
 
     elif selected_tool == Tool.DRONE:
-        simulation.grid_world.set_cell(grid_x, grid_y, CellType.DRONE)
+        map_grid.add_drone(grid_x, grid_y)
 
 
 def erase(simulation, grid_x, grid_y):
-    simulation.grid_world.set_cell(grid_x, grid_y, CellType.EMPTY)
+    simulation.grid_world.map_grid.clear_cell(grid_x, grid_y)

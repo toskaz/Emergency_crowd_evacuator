@@ -1,4 +1,5 @@
 from grids.grid_world import Grid_World
+from grids.grid import Grid
 from entities.evacuee import Evacuee
 from entities.drone import Drone
 from map.cell import CellType
@@ -6,8 +7,8 @@ from map.cell import CellType
 
 class Simulation:
 
-    def __init__(self, map_grid=None):
-        self.grid_world = Grid_World(map_grid)
+    def __init__(self):
+        self.grid_world = Grid_World()
         self.evacuees = []
         self.drones = []
 
@@ -24,10 +25,10 @@ class Simulation:
         self.started = False
 
         map_grid = self.grid_world.map_grid
-        self.grid_world.evacuee_occupancy_grid = type(self.grid_world.map_grid)(
+        self.grid_world.evacuee_occupancy_grid = Grid(
             map_grid.width, map_grid.height, None
         )
-        self.grid_world.drone_occupancy_grid = type(self.grid_world.map_grid)(
+        self.grid_world.drone_occupancy_grid = Grid(
             map_grid.width, map_grid.height, None
         )
         self.grid_world.rebuild_map_data()

@@ -4,9 +4,8 @@ from controls.action import Action
 from graph_approach.navigation_gaphx import NavigationGraphx
 from grids.cluster_grid import ClusterGrid
 from grids.grid import Grid
+from grids.map_grid import Map_Grid
 from map.cell import CellType
-from map.exit import find_exits
-from map.exit_detector import ExitDetector
 from utils.config import image_path
 
 
@@ -21,23 +20,27 @@ ACTION_DIRECTIONS = {
 
 class Grid_World:
 
-    def __init__(self, map_grid=None):
-        self.map_grid = map_grid if map_grid is not None else Grid.from_image(image_path)
-        ExitDetector().mark_exits_on_grid(self.map_grid)
-        self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+    def __init__(self):
+        self.map_grid = Map_Grid.from_image(image_path)
+        self.wall_and_exit_grid = Grid(
+            self.map_grid.width, self.map_grid.height, CellType.EMPTY
+        )
         self.evacuee_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
         self.drone_occupancy_grid = Grid(self.map_grid.width, self.map_grid.height, None)
-        self.simulation_grid = Grid(self.map_grid.width, self.map_grid.height, CellType.EMPTY)
+        self.simulation_grid = self.wall_and_exit_grid.copy()
         self.cluster_grid = None
         self.navigation_graph = None
         self.distance_map = None
 
     def rebuild_map_data(self):
-        self.wall_grid = Grid(self.map_grid.width, self.map_grid.height, None)
+        self.wall_and_exit_grid = Grid(
+            self.map_grid.width, self.map_grid.height, CellType.EMPTY
+        )
         for y in range(self.map_grid.height):
             for x in range(self.map_grid.width):
-                if self.map_grid.get(x, y) == CellType.WALL:
-                    self.wall_grid.set(x, y, CellType.WALL)
+                cell_type = self.map_grid.get(x, y)
+                if cell_type in (CellType.WALL, CellType.EXIT):
+                    self.wall_and_exit_grid.set(x, y, cell_type)
 
         self.cluster_grid = ClusterGrid(self.map_grid)
         self.navigation_graph = NavigationGraphx(self.cluster_grid)
@@ -45,7 +48,7 @@ class Grid_World:
 
     @property
     def exits(self):
-        return find_exits(self.map_grid)
+        return self.map_grid.exits
 
     def route_to_closest_exit(self, start):
         exit_cells = [cell for exit_ in self.exits for cell in exit_.cells]
@@ -57,12 +60,6 @@ class Grid_World:
             drone: self.route_to_closest_exit((drone.grid_x, drone.grid_y))
             for drone in drones
         }
-
-    def set_cell(self, x, y, cell_type):
-        if self.map_grid.get(x, y) == cell_type:
-            return
-
-        self.map_grid.set(x, y, cell_type)
 
     def build_distance_map(self):
         width = self.map_grid.width
@@ -95,19 +92,16 @@ class Grid_World:
         return distances
 
     def is_exit(self, x, y):
-        return self.map_grid.get(x, y) == CellType.EXIT
+        return self.wall_and_exit_grid.get(x, y) == CellType.EXIT
 
     def can_move_to(self, x, y):
-        return self.map_grid.in_bounds(x, y) and self.wall_grid.get(x, y) != CellType.WALL
+        return (
+            self.map_grid.in_bounds(x, y)
+            and self.wall_and_exit_grid.get(x, y) != CellType.WALL
+        )
 
     def rebuild_simulation_grid(self, evacuees=(), drones=()):
-        self.simulation_grid = Grid(self.map_grid.width, self.map_grid.height)
-        for y in range(self.map_grid.height):
-            for x in range(self.map_grid.width):
-                cell_type = self.map_grid.get(x, y)
-                if cell_type in (CellType.EVACUEE, CellType.DRONE):
-                    cell_type = CellType.EMPTY
-                self.simulation_grid.set(x, y, cell_type)
+        self.simulation_grid = self.wall_and_exit_grid.copy()
 
         for evacuee in evacuees:
             self.simulation_grid.set(evacuee.grid_x, evacuee.grid_y, CellType.EVACUEE)
