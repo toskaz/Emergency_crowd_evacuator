@@ -1,6 +1,7 @@
+from collections import deque
+
 from grids.grid import Grid
 from map.cell import CellType
-from map.exit import find_exits
 from map.image_extractor import extract_map_image
 
 
@@ -35,4 +36,34 @@ class Map_Grid(Grid):
 
     @property
     def exits(self):
-        return find_exits(self)
+        exits = []
+        seen = set()
+
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.get(x, y) != CellType.EXIT or (x, y) in seen:
+                    continue
+
+                cells = []
+                queue = deque([(x, y)])
+                seen.add((x, y))
+
+                while queue:
+                    cell_x, cell_y = queue.popleft()
+                    cells.append((cell_x, cell_y))
+
+                    for neighbor in (
+                        (cell_x + 1, cell_y),
+                        (cell_x - 1, cell_y),
+                        (cell_x, cell_y + 1),
+                        (cell_x, cell_y - 1),
+                    ):
+                        if neighbor in seen or not self.in_bounds(*neighbor):
+                            continue
+                        if self.get(*neighbor) == CellType.EXIT:
+                            seen.add(neighbor)
+                            queue.append(neighbor)
+
+                exits.append(cells)
+
+        return exits

@@ -2,6 +2,7 @@ from collections import deque
 
 from controls.action import Action
 from graph_approach.navigation_gaphx import NavigationGraphx
+from grids.cluster import ClusterType
 from grids.cluster_grid import ClusterGrid
 from grids.grid import Grid
 from grids.map_grid import Map_Grid
@@ -50,14 +51,22 @@ class Grid_World:
     def exits(self):
         return self.map_grid.exits
 
-    def route_to_closest_exit(self, start):
-        exit_cells = [cell for exit_ in self.exits for cell in exit_.cells]
-        _, route = self.navigation_graph.distance_to_closest_source(exit_cells, start)
+    def route_to_closest_exit(self, start_cluster_id):
+        exit_cluster_ids = [
+            cluster_id
+            for cluster_id, cluster in enumerate(self.cluster_grid.clusters)
+            if cluster.type is ClusterType.EXIT
+        ]
+        _, route = self.navigation_graph.distance_to_closest_source(
+            exit_cluster_ids, start_cluster_id
+        )
         return route
 
     def plan_drone_routes(self, drones):
         return {
-            drone: self.route_to_closest_exit((drone.grid_x, drone.grid_y))
+            drone: self.route_to_closest_exit(
+                self.cluster_grid.get(drone.grid_x, drone.grid_y)
+            )
             for drone in drones
         }
 
@@ -68,8 +77,8 @@ class Grid_World:
         distances = [[unreachable for _ in range(width)] for _ in range(height)]
         pending = deque()
 
-        for exit_ in self.exits:
-            for x, y in exit_.cells:
+        for exit_cells in self.exits:
+            for x, y in exit_cells:
                 distances[y][x] = 0
                 pending.append((x, y))
 
