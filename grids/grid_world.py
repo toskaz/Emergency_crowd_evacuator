@@ -1,7 +1,7 @@
 from collections import deque
 
 from controls.action import Action
-from graph_approach.navigation_gaphx import NavigationGraphx
+from graph_approach.navigation_graphx import NavigationGraphx
 from grids.cluster import ClusterType
 from grids.cluster_grid import ClusterGrid
 from grids.grid import Grid
