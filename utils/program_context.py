@@ -27,6 +27,7 @@ class ProgramContext:
         self.window = Window(self.simulation.grid_world.map_grid)
         self.drone_controller = DQNDroneController()
         self.drone_routes = {}
+        self.link_stairs_mode = False
         self.view_options = ViewOptions()
         self.simulation_options = SimulationOptions()
         self.state = EditorState()

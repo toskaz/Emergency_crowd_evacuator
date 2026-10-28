@@ -6,6 +6,7 @@ class Color(Enum):
     EVACUEE = (0, 100, 255)
     DRONE = (220, 20, 60)
     EXIT = (0, 255, 0)
+    STAIRS = (255, 200, 0)
     GRID = (200, 200, 200)
     NAVIGATION = (240, 150, 40)
     BACKGROUND = (0, 0, 0)

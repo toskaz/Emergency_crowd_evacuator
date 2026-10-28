@@ -20,7 +20,7 @@ ACTION_DIRECTIONS = {
 
 PATCH_RADIUS = 4
 PATCH_SIZE = 2 * PATCH_RADIUS + 1
-CHANNELS = 8
+CHANNELS = 10
 WALL_CLEARANCE_RADIUS = 3
 WALL_PROXIMITY_PENALTY = 0.08
 
@@ -62,7 +62,8 @@ class DQNDroneController:
 
         for drone in simulation.drones:
             world = simulation.grid_world
-            if world.map_grid.get(drone.grid_x, drone.grid_y) == CellType.EXIT:
+            floor = world.floors[drone.floor_id]
+            if floor.map_grid.get(drone.grid_x, drone.grid_y) == CellType.EXIT:
                 self.pending_transitions.pop(drone, None)
                 actions.append(Action.STAY)
                 continue
@@ -71,13 +72,15 @@ class DQNDroneController:
             state, route_ids = self._observe(simulation, drone, route)
             legal_actions = self._legal_actions(simulation, drone)
             action = self._select_action(state, legal_actions, drone, route_ids, simulation)
-            distance = self._distance_at(world, drone.grid_x, drone.grid_y)
+            distance = self._distance_at(
+                world, drone.floor_id, drone.grid_x, drone.grid_y
+            )
             self.pending_transitions[drone] = (
                 state,
                 int(action),
                 distance,
                 route_ids,
-                (drone.grid_x, drone.grid_y),
+                (drone.floor_id, drone.grid_x, drone.grid_y),
             )
             actions.append(action)
 
@@ -86,8 +89,10 @@ class DQNDroneController:
     def learn(self, simulation, routes):
         for drone, transition in list(self.pending_transitions.items()):
             state, action, previous_distance, route_ids, previous_position = transition
-            current_position = (drone.grid_x, drone.grid_y)
-            current_distance = self._distance_at(simulation.grid_world, *current_position)
+            current_position = (drone.floor_id, drone.grid_x, drone.grid_y)
+            current_distance = self._distance_at(
+                simulation.grid_world, *current_position
+            )
             reward = -0.04
 
             if previous_distance < float("inf") and current_distance < float("inf"):
@@ -96,14 +101,20 @@ class DQNDroneController:
             if current_position == previous_position and action != Action.STAY:
                 reward -= 0.5
 
-            reward -= self._wall_proximity_penalty(simulation, *current_position)
-            cluster_id = simulation.grid_world.cluster_grid.get(*current_position)
-            if cluster_id in route_ids:
+            reward -= self._wall_proximity_penalty(
+                simulation, drone.floor_id, drone.grid_x, drone.grid_y
+            )
+            cluster_id = simulation.grid_world.floors[drone.floor_id].cluster_grid.get(
+                drone.grid_x, drone.grid_y
+            )
+            if (drone.floor_id, cluster_id) in route_ids:
                 reward += 0.06
             else:
                 reward -= 0.05
 
-            done = simulation.grid_world.map_grid.get(*current_position) == CellType.EXIT
+            done = simulation.grid_world.is_exit(
+                drone.grid_x, drone.grid_y, drone.floor_id
+            )
             if done:
                 reward += 2.0
 
@@ -120,14 +131,14 @@ class DQNDroneController:
             if self.training_steps % 4 == 0:
                 self._optimize()
 
-    def _distance_at(self, world, x, y):
-        distances = world.distance_map
+    def _distance_at(self, world, floor_id, x, y):
+        distances = world.floors[floor_id].distance_map
         if not (0 <= y < len(distances)) or not (0 <= x < len(distances[y])):
             return float("inf")
         return distances[y][x]
 
-    def _wall_proximity_penalty(self, simulation, x, y):
-        grid = simulation.grid_world.map_grid
+    def _wall_proximity_penalty(self, simulation, floor_id, x, y):
+        grid = simulation.grid_world.floors[floor_id].map_grid
         closest_wall = WALL_CLEARANCE_RADIUS + 1
 
         for delta_y in range(-WALL_CLEARANCE_RADIUS, WALL_CLEARANCE_RADIUS + 1):
@@ -149,27 +160,32 @@ class DQNDroneController:
 
     def _observe(self, simulation, drone, route):
         world = simulation.grid_world
-        cluster_grid = world.cluster_grid
+        floor = world.floors[drone.floor_id]
+        cluster_grid = floor.cluster_grid
         route = list(route)
         route_cursor = self.route_cursors.get(drone, 0)
         current_cluster = cluster_grid.get(drone.grid_x, drone.grid_y)
+        current_node = (drone.floor_id, current_cluster)
 
-        if current_cluster in route:
+        if current_node in route:
             matching_indices = [
-                index for index, cluster_id in enumerate(route)
-                if cluster_id == current_cluster and index >= route_cursor
+                index for index, node in enumerate(route)
+                if node == current_node and index >= route_cursor
             ]
             if matching_indices:
                 current_index = matching_indices[-1]
-                route_cursor = min(current_index + 1, len(route) - 1)
+                route_cursor = min(current_index + 1, len(route))
                 self.route_cursors[drone] = route_cursor
 
         remaining_route = route[route_cursor:] if route else []
         route_ids = set(route[max(0, route_cursor - 1):]) if route else set()
-        target_cluster = remaining_route[0] if remaining_route else None
+        target_node = remaining_route[0] if remaining_route else None
 
-        if target_cluster is not None:
-            target_cells = cluster_grid.clusters[target_cluster].cells
+        if target_node is not None:
+            target_floor_id, target_cluster_id = target_node
+            target_cells = world.floors[target_floor_id].cluster_grid.clusters[
+                target_cluster_id
+            ].cells
         else:
             target_cells = [
                 cell
@@ -177,6 +193,7 @@ class DQNDroneController:
                 if cluster.type is ClusterType.EXIT
                 for cell in cluster.cells
             ]
+            target_floor_id = drone.floor_id
 
         if not target_cells:
             target_cells = [
@@ -187,24 +204,27 @@ class DQNDroneController:
             ]
 
         state = np.zeros((CHANNELS, PATCH_SIZE, PATCH_SIZE), dtype=np.float32)
-        if target_cells:
+        if target_cells and target_floor_id == drone.floor_id:
             target_x = sum(x for x, _ in target_cells) / len(target_cells)
             target_y = sum(y for _, y in target_cells) / len(target_cells)
-            normalization = max(world.map_grid.width, world.map_grid.height, 1)
+            normalization = max(floor.map_grid.width, floor.map_grid.height, 1)
             direction_x = (target_x - drone.grid_x) / normalization
             direction_y = (target_y - drone.grid_y) / normalization
         else:
             direction_x = direction_y = 0.0
 
+        floor_channel = drone.floor_id / max(len(world.floors) - 1, 1)
         for patch_y in range(PATCH_SIZE):
             for patch_x in range(PATCH_SIZE):
                 x = drone.grid_x + patch_x - PATCH_RADIUS
                 y = drone.grid_y + patch_y - PATCH_RADIUS
-                if not world.map_grid.in_bounds(x, y):
+                if not floor.map_grid.in_bounds(x, y):
                     state[0, patch_y, patch_x] = 1.0
+                    state[9, patch_y, patch_x] = floor_channel
                     continue
 
-                cell_type = world.simulation_grid.get(x, y)
+                cell_type = floor.simulation_grid.get(x, y)
+                terrain_type = floor.map_grid.get(x, y)
                 if cell_type == CellType.WALL:
                     state[0, patch_y, patch_x] = 1.0
                 if cell_type == CellType.EVACUEE:
@@ -216,15 +236,23 @@ class DQNDroneController:
                     state[2, patch_y, patch_x] = 1.0
 
                 cluster_id = cluster_grid.get(x, y)
-                if cluster_id in route_ids:
+                cluster_node = (drone.floor_id, cluster_id)
+                if cluster_id is not None and cluster_id >= 0 and cluster_node in route_ids:
                     state[3, patch_y, patch_x] = 1.0
-                if target_cluster is not None and cluster_id == target_cluster:
+                if (
+                    target_node is not None
+                    and target_node[0] == drone.floor_id
+                    and cluster_id == target_node[1]
+                ):
                     state[4, patch_y, patch_x] = 1.0
-                if cell_type == CellType.EXIT:
+                if terrain_type == CellType.STAIRS:
                     state[5, patch_y, patch_x] = 1.0
+                if terrain_type == CellType.EXIT:
+                    state[6, patch_y, patch_x] = 1.0
 
-                state[6, patch_y, patch_x] = direction_x
-                state[7, patch_y, patch_x] = direction_y
+                state[7, patch_y, patch_x] = direction_x
+                state[8, patch_y, patch_x] = direction_y
+                state[9, patch_y, patch_x] = floor_channel
 
         return state, route_ids
 
@@ -238,9 +266,12 @@ class DQNDroneController:
 
             x = drone.grid_x + dx
             y = drone.grid_y + dy
-            if not world.can_move_to(x, y):
+            if not world.can_move_to(x, y, drone.floor_id):
                 continue
             legal_actions.append(action)
+
+        if world.stair_arrival(drone, "drone") is not None:
+            legal_actions.append(Action.USE_STAIRS)
 
         return legal_actions
 
@@ -255,16 +286,29 @@ class DQNDroneController:
             q_values = self.policy_network(tensor)[0].cpu().numpy()
 
         world = simulation.grid_world
-        current_distance = self._distance_at(world, drone.grid_x, drone.grid_y)
+        current_distance = self._distance_at(
+            world, drone.floor_id, drone.grid_x, drone.grid_y
+        )
         scores = np.full(len(Action), -np.inf, dtype=np.float32)
         for action in legal_actions:
-            dx, dy = ACTION_DIRECTIONS[action]
-            x = drone.grid_x + dx
-            y = drone.grid_y + dy
-            distance_gain = current_distance - self._distance_at(world, x, y)
-            cluster_id = world.cluster_grid.get(x, y)
-            route_bonus = 0.15 if cluster_id in route_ids else 0.0
-            wall_penalty = self._wall_proximity_penalty(simulation, x, y)
+            if action is Action.USE_STAIRS:
+                next_floor_id, x, y = world.stair_arrival(drone, "drone")
+            else:
+                dx, dy = ACTION_DIRECTIONS[action]
+                next_floor_id = drone.floor_id
+                x = drone.grid_x + dx
+                y = drone.grid_y + dy
+
+            distance_gain = current_distance - self._distance_at(
+                world, next_floor_id, x, y
+            )
+            cluster_id = world.floors[next_floor_id].cluster_grid.get(x, y)
+            route_bonus = (
+                0.15 if (next_floor_id, cluster_id) in route_ids else 0.0
+            )
+            wall_penalty = self._wall_proximity_penalty(
+                simulation, next_floor_id, x, y
+            )
             scores[int(action)] = (
                 q_values[int(action)]
                 + 0.35 * distance_gain

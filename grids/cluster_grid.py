@@ -1,6 +1,6 @@
 from collections import deque
 
-from grids.cluster import Cluster, ClusterType
+from grids.cluster import Cluster, ClusterType, StairCluster
 from grids.grid import Grid
 from map.cell import CellType
 from utils.config import cluster_size
@@ -25,18 +25,20 @@ class ClusterGrid:
                     for x in range(block_x, min(block_x + cluster_width, grid.width)):
                         if grid.get(x, y) == CellType.WALL:
                             self.grid.set(x, y, -1)
-                        elif grid.get(x, y) != CellType.EXIT and self.grid.get(x, y) is None:
+                        elif grid.get(x, y) not in (CellType.EXIT, CellType.STAIRS) and self.grid.get(x, y) is None:
                             cluster_id = self._add_cluster()
                             self.fill(grid, x, y, origin_x, origin_y, cluster_id)
 
         self.add_exit_sectors(grid)
+        self.add_stair_sectors(grid)
         for cluster in self.clusters:
             cluster.calculate_centroid()
         self.build_adjacent_cluster_pairs()
 
     def _add_cluster(self, cluster_type=ClusterType.NORMAL):
         cluster_id = len(self.clusters)
-        self.clusters.append(Cluster(type=cluster_type))
+        cluster_class = StairCluster if cluster_type is ClusterType.STAIRS else Cluster
+        self.clusters.append(cluster_class(type=cluster_type))
         return cluster_id
 
     def add_exit_sectors(self, grid):
@@ -71,6 +73,38 @@ class ClusterGrid:
                             seen.add(neighbor)
                             pending.append(neighbor)
 
+    def add_stair_sectors(self, grid):
+        seen = set()
+
+        for y in range(grid.height):
+            for x in range(grid.width):
+                if grid.get(x, y) != CellType.STAIRS or (x, y) in seen:
+                    continue
+
+                cluster_id = self._add_cluster(ClusterType.STAIRS)
+                pending = deque([(x, y)])
+                seen.add((x, y))
+
+                while pending:
+                    current_x, current_y = pending.popleft()
+                    self.grid.set(current_x, current_y, cluster_id)
+                    self.clusters[cluster_id].cells.append((current_x, current_y))
+
+                    for neighbor_x, neighbor_y in (
+                        (current_x + 1, current_y),
+                        (current_x - 1, current_y),
+                        (current_x, current_y + 1),
+                        (current_x, current_y - 1),
+                    ):
+                        neighbor = (neighbor_x, neighbor_y)
+                        if (
+                            grid.in_bounds(*neighbor)
+                            and grid.get(*neighbor) == CellType.STAIRS
+                            and neighbor not in seen
+                        ):
+                            seen.add(neighbor)
+                            pending.append(neighbor)
+
     def fill(self, grid, x, y, origin_x, origin_y, cluster_id):
         pending = [(x, y)]
         neighbors = (
@@ -93,7 +127,7 @@ class ClusterGrid:
             if grid.get(current_x, current_y) == CellType.WALL:
                 self.grid.set(current_x, current_y, -1)
                 continue
-            if grid.get(current_x, current_y) == CellType.EXIT:
+            if grid.get(current_x, current_y) in (CellType.EXIT, CellType.STAIRS):
                 continue
 
             self.grid.set(current_x, current_y, cluster_id)

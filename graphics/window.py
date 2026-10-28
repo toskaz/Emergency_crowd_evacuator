@@ -57,7 +57,12 @@ class Window:
         if options.show_clusters:
             draw_clusters(self.screen, world.cluster_grid, font=self.small_font)
         if options.show_drone_routes:
-            draw_navigation(self.screen, world.navigation_graph, context.drone_routes)
+            draw_navigation(
+                self.screen,
+                world.floors,
+                context.drone_routes,
+                world.active_floor_id,
+            )
 
     def _draw_ui(self, context, key_bindings, selected_tool=None):
         draw_ui(

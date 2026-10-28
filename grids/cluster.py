@@ -5,6 +5,7 @@ from enum import Enum, auto
 class ClusterType(Enum):
     NORMAL = auto()
     EXIT = auto()
+    STAIRS = auto()
 
 
 @dataclass
@@ -26,3 +27,8 @@ class Cluster:
         if self.centroid is None:
             raise RuntimeError("Cluster centroid has not been calculated")
         return self.centroid
+
+
+@dataclass
+class StairCluster(Cluster):
+    linked_to: tuple[int, int] | None = None

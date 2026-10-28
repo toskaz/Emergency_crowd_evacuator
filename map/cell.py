@@ -6,3 +6,4 @@ class CellType(IntEnum):
     EXIT = 2
     EVACUEE = 3
     DRONE = 4
+    STAIRS = 5

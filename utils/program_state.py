@@ -4,11 +4,13 @@ from controls.action import Action
 from controls.action_controller import get_actions
 from editor.editor import handle_map_editor
 from editor.tool import Tool
+from grids.coordinates import pixel_to_grid
 
 
 class ProgramState:
     name = "state"
     render_options_enabled = False
+    floor_switch_enabled = False
     selected_tool = None
     key_bindings = ()
 
@@ -35,18 +37,38 @@ class ProgramState:
         )
         evacuated = context.simulation.evacuated_count
         total = evacuated + len(context.simulation.evacuees)
+        floor = context.simulation.grid_world.active_floor_id + 1
+        floor_count = len(context.simulation.grid_world.floors)
 
-        return [
+        lines = [
             f"State: {self.name}",
+            f"Floor: {floor}/{floor_count}",
             f"Drones: {mode}",
             f"Step: {context.simulation.step_count}",
             f"Evacuated: {evacuated}/{total}",
         ]
+        world = context.simulation.grid_world
+        if context.link_stairs_mode and world.pending_stair_endpoint is not None:
+            pending_floor = world.pending_stair_endpoint[0] + 1
+            lines.append(f"Stair link selected on floor {pending_floor}")
+        if world.stair_link_error:
+            lines.append(world.stair_link_error)
+        return lines
 
     def render(self, program):
         program.window.draw_simulation(program, self.key_bindings)
 
     def handle_key_event(self, program, key):
+        world = program.simulation.grid_world
+        if self.floor_switch_enabled:
+            if key == pygame.K_UP:
+                world.set_active_floor(
+                    min(len(world.floors) - 1, world.active_floor_id + 1)
+                )
+                return
+            if key == pygame.K_DOWN:
+                world.set_active_floor(max(0, world.active_floor_id - 1))
+                return
         if key == pygame.K_g:
             program.view_options.show_grid = not program.view_options.show_grid
             return
@@ -67,7 +89,7 @@ class EditorState(ProgramState):
     name = "editor"
     key_bindings = (
         "E: overview",
-        "1-4: select tool",
+        "1-5: select tool",
         "Left click: place",
         "Right click: erase",
         "G: toggle grid",
@@ -92,6 +114,8 @@ class EditorState(ProgramState):
             self.selected_tool = Tool.EXIT
         elif key == pygame.K_4:
             self.selected_tool = Tool.DRONE
+        elif key == pygame.K_5:
+            self.selected_tool = Tool.STAIRS
 
     def handle_mouse(self, program, event):
         handle_map_editor(
@@ -108,9 +132,12 @@ class EditorState(ProgramState):
 class OverviewState(ProgramState):
     name = "overview"
     render_options_enabled = True
+    floor_switch_enabled = True
     key_bindings = (
         "P: start simulation",
         "E: edit map",
+        "Up/Down: change floor",
+        "L: link stairs, click one cluster on each floor",
         "C: toggle clusters",
         "B: toggle connections",
         "V: toggle drone routes",
@@ -129,6 +156,44 @@ class OverviewState(ProgramState):
             program.transition_to(EditorState())
         elif key == pygame.K_p:
             program.transition_to(SimulationRunningState())
+        elif key == pygame.K_l:
+            program.link_stairs_mode = not program.link_stairs_mode
+            program.simulation.grid_world.pending_stair_endpoint = None
+            program.simulation.grid_world.stair_link_error = None
+
+    def handle_mouse(self, program, event):
+        if not program.link_stairs_mode:
+            return
+
+        world = program.simulation.grid_world
+        if event.button == 3:
+            world.pending_stair_endpoint = None
+            world.stair_link_error = None
+            return
+        if event.button != 1:
+            return
+
+        grid_x, grid_y = pixel_to_grid(*event.pos)
+        endpoint = world.stair_cluster_at(world.active_floor_id, grid_x, grid_y)
+        if endpoint is None:
+            world.stair_link_error = "Select a stair cluster"
+            return
+
+        pending = world.pending_stair_endpoint
+        if pending is None:
+            world.pending_stair_endpoint = endpoint
+            world.stair_link_error = None
+        elif pending[0] == endpoint[0]:
+            world.pending_stair_endpoint = endpoint
+            world.stair_link_error = "Choose the other floor"
+        else:
+            try:
+                world.connect_stair_clusters(pending, endpoint)
+            except ValueError as error:
+                world.stair_link_error = str(error)
+            else:
+                world.pending_stair_endpoint = None
+                world.stair_link_error = None
 
     def render(self, program):
         program.window.draw_overview(program, self.key_bindings)
@@ -137,10 +202,12 @@ class OverviewState(ProgramState):
 class SimulationRunningState(ProgramState):
     name = "simulation_running"
     render_options_enabled = True
+    floor_switch_enabled = True
     key_bindings = (
         "P: pause",
         "X: finish simulation",
         "WASD: move evacuees",
+        "T: use stairs",
         "F: toggle drone mode",
         "C/B/V: toggle overlays",
         "G: toggle grid",
@@ -166,6 +233,8 @@ class SimulationRunningState(ProgramState):
             program.simulation_options.action = Action.LEFT
         elif key == pygame.K_d:
             program.simulation_options.action = Action.RIGHT
+        elif key == pygame.K_t:
+            program.simulation_options.action = Action.USE_STAIRS
 
     def update(self, program):
         options = program.simulation_options
@@ -180,6 +249,8 @@ class SimulationRunningState(ProgramState):
             drone_actions = get_actions(program.simulation.drones, options.action)
 
         program.simulation.step(evacuee_actions, drone_actions)
+        if options.action is Action.USE_STAIRS:
+            options.action = Action.STAY
         if options.autonomous_drones:
             program.drone_controller.learn(program.simulation, program.drone_routes)
 
@@ -187,6 +258,7 @@ class SimulationRunningState(ProgramState):
 class SimulationPausedState(ProgramState):
     name = "simulation_paused"
     render_options_enabled = True
+    floor_switch_enabled = True
     key_bindings = (
         "P: resume",
         "M: simulation editor",
@@ -206,6 +278,7 @@ class SimulationPausedState(ProgramState):
 class SimulationEditorState(ProgramState):
     name = "simulation_editor"
     render_options_enabled = True
+    floor_switch_enabled = True
     key_bindings = (
         "Enter: return to pause",
         "C: toggle clusters",
@@ -222,6 +295,7 @@ class SimulationEditorState(ProgramState):
 class ResultsState(ProgramState):
     name = "results"
     render_options_enabled = True
+    floor_switch_enabled = True
     key_bindings = (
         "Enter: return to overview",
         "C: toggle clusters",

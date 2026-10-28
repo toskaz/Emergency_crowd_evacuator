@@ -12,6 +12,7 @@ CELL_COLORS = {
     CellType.EMPTY: Color.EMPTY.value,
     CellType.WALL: Color.WALL.value,
     CellType.EXIT: Color.EXIT.value,
+    CellType.STAIRS: Color.STAIRS.value,
     CellType.EVACUEE: Color.EMPTY.value,
     CellType.DRONE: Color.EMPTY.value,
 }
@@ -27,6 +28,7 @@ TOOL_COLORS = {
     Tool.EVACUEE: Color.EVACUEE.value,
     Tool.EXIT: Color.EXIT.value,
     Tool.DRONE: Color.DRONE.value,
+    Tool.STAIRS: Color.STAIRS.value,
 }
 
 
@@ -90,6 +92,7 @@ def draw_ui(screen, font, selected_tool=None, status_lines=(), key_bindings=(),
         Tool.EVACUEE: "EVACUEE",
         Tool.EXIT: "EXIT",
         Tool.DRONE: "DRONE",
+        Tool.STAIRS: "STAIRS",
     }
 
     padding = 10
@@ -111,22 +114,29 @@ def draw_ui(screen, font, selected_tool=None, status_lines=(), key_bindings=(),
     draw_key_bindings(screen, key_font or font, key_bindings)
 
 
-def draw_navigation(screen, navigation, drone_routes):
-    cluster_grid = navigation.cluster_grid
-
+def draw_navigation(screen, floors, drone_routes, floor_id):
     for route in drone_routes.values():
-        points = [
-            tuple(
+        points = []
+        for node in route:
+            route_floor_id, cluster_id = node
+            if route_floor_id != floor_id:
+                points.append(None)
+                continue
+            points.append(tuple(
                 round(value)
                 for value in grid_to_pixel_center(
-                    *cluster_grid.clusters[cluster_id].get_centroid()
+                    *floors[floor_id].cluster_grid.clusters[cluster_id].get_centroid()
                 )
-            )
-            for cluster_id in route
-        ]
+            ))
 
-        if len(points) > 1:
-            pygame.draw.lines(screen, Color.DRONE.value, False, points, 2)
+        segment = []
+        for point in points + [None]:
+            if point is None:
+                if len(segment) > 1:
+                    pygame.draw.lines(screen, Color.DRONE.value, False, segment, 2)
+                segment = []
+            else:
+                segment.append(point)
 
 
 def cluster_color(x, y):
@@ -167,6 +177,8 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
             color = (
                 Color.EXIT.value
                 if overlay_grid.clusters[cluster_id].type is ClusterType.EXIT
+                else Color.STAIRS.value
+                if overlay_grid.clusters[cluster_id].type is ClusterType.STAIRS
                 else cluster_color(x, y)
             )
 

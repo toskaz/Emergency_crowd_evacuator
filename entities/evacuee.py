@@ -1,5 +1,6 @@
 class Evacuee:
 
-    def __init__(self, grid_x, grid_y):
+    def __init__(self, grid_x, grid_y, floor_id=0):
         self.grid_x = grid_x
         self.grid_y = grid_y
+        self.floor_id = floor_id

@@ -6,3 +6,4 @@ class Tool(IntEnum):
     EVACUEE = 2
     EXIT = 3
     DRONE = 4
+    STAIRS = 5

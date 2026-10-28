@@ -1,5 +1,6 @@
 from editor.tool import Tool
 from grids.coordinates import pixel_to_grid
+from map.cell import CellType
 
 def handle_map_editor(simulation, mouse_pos, button, selected_tool):
     if simulation.started:
@@ -9,7 +10,8 @@ def handle_map_editor(simulation, mouse_pos, button, selected_tool):
 
     grid_x, grid_y = pixel_to_grid(pos_x, pos_y)
 
-    if not simulation.grid_world.map_grid.in_bounds(grid_x, grid_y):
+    world = simulation.grid_world
+    if not world.map_grid.in_bounds(grid_x, grid_y):
         return
 
     if button == 1:
@@ -20,21 +22,28 @@ def handle_map_editor(simulation, mouse_pos, button, selected_tool):
 
 
 def place(simulation, grid_x, grid_y, selected_tool):
-
-    map_grid = simulation.grid_world.map_grid
+    world = simulation.grid_world
 
     if selected_tool == Tool.WALL:
-        map_grid.add_wall(grid_x, grid_y)
+        cell_type = CellType.WALL
 
     elif selected_tool == Tool.EXIT:
-        map_grid.add_exit(grid_x, grid_y)
+        cell_type = CellType.EXIT
 
     elif selected_tool == Tool.EVACUEE:
-        map_grid.add_evacuee(grid_x, grid_y)
+        cell_type = CellType.EVACUEE
 
     elif selected_tool == Tool.DRONE:
-        map_grid.add_drone(grid_x, grid_y)
+        cell_type = CellType.DRONE
+
+    elif selected_tool == Tool.STAIRS:
+        cell_type = CellType.STAIRS
+    else:
+        return
+
+    world.set_map_cell(world.active_floor_id, grid_x, grid_y, cell_type)
 
 
 def erase(simulation, grid_x, grid_y):
-    simulation.grid_world.map_grid.clear_cell(grid_x, grid_y)
+    world = simulation.grid_world
+    world.set_map_cell(world.active_floor_id, grid_x, grid_y, CellType.EMPTY)

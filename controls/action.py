@@ -6,3 +6,4 @@ class Action(IntEnum):
     DOWN = 2
     LEFT = 3
     RIGHT = 4
+    USE_STAIRS = 5

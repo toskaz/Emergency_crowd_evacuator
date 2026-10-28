@@ -24,26 +24,27 @@ class Simulation:
         self.evacuated_count = 0
         self.started = False
 
-        map_grid = self.grid_world.map_grid
-        self.grid_world.evacuee_occupancy_grid = Grid(
-            map_grid.width, map_grid.height, None
-        )
-        self.grid_world.drone_occupancy_grid = Grid(
-            map_grid.width, map_grid.height, None
-        )
+        for floor in self.grid_world.floors.values():
+            floor.evacuee_occupancy_grid = Grid(
+                floor.map_grid.width, floor.map_grid.height, None
+            )
+            floor.drone_occupancy_grid = Grid(
+                floor.map_grid.width, floor.map_grid.height, None
+            )
         self.grid_world.rebuild_map_data()
 
-        for y in range(map_grid.height):
-            for x in range(map_grid.width):
-                cell_type = map_grid.get(x, y)
-                if cell_type == CellType.EVACUEE:
-                    evacuee = Evacuee(x, y)
-                    self.evacuees.append(evacuee)
-                    self.grid_world.add_evacuee(evacuee)
-                elif cell_type == CellType.DRONE:
-                    drone = Drone(x, y)
-                    self.drones.append(drone)
-                    self.grid_world.add_drone(drone)
+        for floor_id, floor in self.grid_world.floors.items():
+            for y in range(floor.map_grid.height):
+                for x in range(floor.map_grid.width):
+                    cell_type = floor.map_grid.get(x, y)
+                    if cell_type == CellType.EVACUEE:
+                        evacuee = Evacuee(x, y, floor_id)
+                        self.evacuees.append(evacuee)
+                        self.grid_world.add_evacuee(evacuee)
+                    elif cell_type == CellType.DRONE:
+                        drone = Drone(x, y, floor_id)
+                        self.drones.append(drone)
+                        self.grid_world.add_drone(drone)
 
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.prepared = True
@@ -58,7 +59,9 @@ class Simulation:
         self.started = True
 
     def touching_exit(self, evacuee):
-        return self.grid_world.is_exit(evacuee.grid_x, evacuee.grid_y)
+        return self.grid_world.is_exit(
+            evacuee.grid_x, evacuee.grid_y, evacuee.floor_id
+        )
 
     def remove_evacuated(self):
         evacuated = [evacuee for evacuee in self.evacuees if self.touching_exit(evacuee)]
