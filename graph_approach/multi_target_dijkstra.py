@@ -4,7 +4,7 @@ import math
 # dla uproszczenia implementacji 
 # source_nodes to sa wyjscia
 #target_node to "dron"
-def get_shortest_path_to_exits(G, source_nodes, target_node):
+def find_path_multi_target_dijkstra(G, source_nodes, target_node):
     
     if not source_nodes or target_node is None:
         return math.inf, []
@@ -18,5 +18,6 @@ def get_shortest_path_to_exits(G, source_nodes, target_node):
         )
         
         return float(distance), path[::-1]
-    except nx.NetworkXNoPath:
+        
+    except (nx.NetworkXNoPath, nx.NodeNotFound):
         return math.inf, []
