@@ -38,7 +38,7 @@ class NavigationGraphx:
         if not source_nodes:
             return math.inf, []
 
-        #return find_path_multi_target_dijkstra(self.G, source_nodes, target_node)
+        return find_path_multi_target_dijkstra(self.G, source_nodes, target_node)
         #return find_path_multi_target_bfs(self.G, source_nodes, target_node)
-        return find_path_multi_target_astar(self.G, source_nodes, target_node)
+        # return find_path_multi_target_astar(self.G, source_nodes, target_node, self.floors)
         # return find_path_multi_target_bidirectional_dijkstra(self.G, source_nodes, target_node)
