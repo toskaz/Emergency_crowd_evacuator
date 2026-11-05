@@ -18,6 +18,7 @@ BLOCKED_PATTERNS = 16
 
 EXIT_REACH = 5
 PATH_SEARCH_LIMIT = 80
+PANIC_CHANCE = 0.65
 
 LEARNING_RATE = 0.1
 DISCOUNT = 0.9
@@ -40,11 +41,13 @@ class QLearningFollowController:
         self.last_seen = {}
         self.pending = {}
         self.path_cache = {}
+        self.exit_cells = {}
 
     def reset(self):
         self.last_seen.clear()
         self.pending.clear()
         self.path_cache.clear()
+        self.exit_cells.clear()
 
     def save(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -90,17 +93,36 @@ class QLearningFollowController:
         return random.choice(best_moves)
 
     def follow_last_seen(self, world, evacuee):
+        visible_exit = self.nearest_visible_exit(world, evacuee)
+        if visible_exit is not None:
+            return self.step_closer(world, evacuee, *visible_exit)
+
         target = self.last_seen.get(evacuee)
         if target is None or target[0] != evacuee.floor_id:
-            return Action.STAY
+            return panic(world, evacuee)
 
         _, target_x, target_y = target
         if (evacuee.grid_x, evacuee.grid_y) == (target_x, target_y):
             if world.floors[evacuee.floor_id].map_grid.get(target_x, target_y) == CellType.STAIRS:
                 return Action.USE_STAIRS
-            return Action.STAY
+            self.last_seen.pop(evacuee)
+            return panic(world, evacuee)
 
         return self.step_closer(world, evacuee, target_x, target_y)
+
+    def nearest_visible_exit(self, world, evacuee):
+        floor_id = evacuee.floor_id
+        if floor_id not in self.exit_cells:
+            self.exit_cells[floor_id] = find_exit_cells(world, floor_id)
+
+        visible = [
+            (x, y)
+            for x, y in self.exit_cells[floor_id]
+            if can_see(world, floor_id, evacuee.grid_x, evacuee.grid_y, x, y)
+        ]
+        if not visible:
+            return None
+        return min(visible, key=lambda cell: abs(cell[0] - evacuee.grid_x) + abs(cell[1] - evacuee.grid_y))
 
     def step_closer(self, world, evacuee, target_x, target_y):
         target = (evacuee.floor_id, target_x, target_y)
@@ -219,6 +241,22 @@ def blocked_pattern(world, evacuee):
         if not world.can_move_to(x, y, evacuee.floor_id) or occupancy.get(x, y) is not None:
             pattern |= 1 << bit
     return pattern
+
+
+def panic(world, evacuee):
+    if random.random() < PANIC_CHANCE:
+        return random.choice(MOVES)
+    return step_towards_exit(world, evacuee)
+
+
+def find_exit_cells(world, floor_id):
+    walls = world.floors[floor_id].wall_and_exit_grid
+    return [
+        (x, y)
+        for y in range(walls.height)
+        for x in range(walls.width)
+        if walls.get(x, y) == CellType.EXIT
+    ]
 
 
 def exit_distance(world, evacuee):
