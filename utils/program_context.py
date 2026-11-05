@@ -2,8 +2,10 @@ from dataclasses import dataclass
 
 from controls.action import Action
 from controls.drone_dqn import DQNDroneController
+from controls.evacuee_rl import QLearningFollowController
 from graphics.window import Window
 from simulation import Simulation
+from utils.config import q_table_path
 from utils.program_state import EditorState
 
 
@@ -19,6 +21,7 @@ class ViewOptions:
 class SimulationOptions:
     action: Action = Action.STAY
     autonomous_drones: bool = True
+    rl_evacuees: bool = True
 
 
 class ProgramContext:
@@ -26,6 +29,8 @@ class ProgramContext:
         self.simulation = Simulation()
         self.window = Window(self.simulation.grid_world.map_grid)
         self.drone_controller = DQNDroneController()
+        self.rl_evacuee_controller = QLearningFollowController()
+        self.rl_evacuee_controller.load(q_table_path)
         self.drone_routes = {}
         self.link_stairs_mode = False
         self.view_options = ViewOptions()

@@ -35,6 +35,11 @@ class ProgramState:
             if context.simulation_options.autonomous_drones
             else "manual"
         )
+        evacuee_mode = (
+            "RL followers"
+            if context.simulation_options.rl_evacuees
+            else "manual"
+        )
         evacuated = context.simulation.evacuated_count
         total = evacuated + len(context.simulation.evacuees)
         floor = context.simulation.grid_world.active_floor_id + 1
@@ -44,6 +49,7 @@ class ProgramState:
             f"State: {self.name}",
             f"Floor: {floor}/{floor_count}",
             f"Drones: {mode}",
+            f"Evacuees: {evacuee_mode}",
             f"Step: {context.simulation.step_count}",
             f"Evacuated: {evacuated}/{total}",
         ]
@@ -149,6 +155,7 @@ class OverviewState(ProgramState):
         program.drone_routes = {}
         program.drone_controller.pending_transitions.clear()
         program.drone_controller.route_cursors.clear()
+        program.rl_evacuee_controller.reset()
         program.plan_drone_routes()
 
     def handle_key(self, program, key):
@@ -209,6 +216,7 @@ class SimulationRunningState(ProgramState):
         "WASD: move evacuees",
         "T: use stairs",
         "F: toggle drone mode",
+        "R: toggle RL evacuees",
         "C/B/V: toggle overlays",
         "G: toggle grid",
     )
@@ -225,6 +233,8 @@ class SimulationRunningState(ProgramState):
             program.transition_to(ResultsState())
         elif key == pygame.K_f:
             program.simulation_options.autonomous_drones = not program.simulation_options.autonomous_drones
+        elif key == pygame.K_r:
+            program.simulation_options.rl_evacuees = not program.simulation_options.rl_evacuees
         elif key == pygame.K_w:
             program.simulation_options.action = Action.UP
         elif key == pygame.K_s:
@@ -238,7 +248,10 @@ class SimulationRunningState(ProgramState):
 
     def update(self, program):
         options = program.simulation_options
-        evacuee_actions = get_actions(program.simulation.evacuees, options.action)
+        if options.rl_evacuees:
+            evacuee_actions = program.rl_evacuee_controller.get_actions(program.simulation)
+        else:
+            evacuee_actions = get_actions(program.simulation.evacuees, options.action)
 
         if options.autonomous_drones:
             drone_actions = program.drone_controller.get_actions(

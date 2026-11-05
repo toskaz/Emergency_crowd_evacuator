@@ -10,3 +10,6 @@ navigation_block_size = 4
 drone_lead_distance = 3
 
 cluster_size = 3
+
+evacuee_vision_radius = 10
+q_table_path = str(PROJECT_ROOT / "models" / "evacuee_q_table.npy")
