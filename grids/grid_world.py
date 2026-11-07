@@ -37,6 +37,8 @@ class Grid_World:
         self.active_floor_id = 0
         self.pending_stair_endpoint = None
         self.stair_link_error = None
+        self.map_changed = False
+        self.changed_floor_id = None
         self.navigation_graph = None
         self.rebuild_map_data()
 
@@ -372,8 +374,20 @@ class Grid_World:
 
     def set_map_cell(self, floor_id, x, y, cell_type):
         floor = self.floors[floor_id]
+        if floor.map_grid.get(x, y) == cell_type:
+            return False
         floor.map_grid.set(x, y, cell_type)
-        self.rebuild_map_data({floor_id})
+        self.map_changed = True
+        self.changed_floor_id = floor_id
+        return True
+
+    def rebuild_changed_map_data(self):
+        if not self.map_changed:
+            return False
+        self.rebuild_map_data({self.changed_floor_id})
+        self.changed_floor_id = None
+        self.map_changed = False
+        return True
 
     def rebuild_simulation_grid(self, evacuees=(), drones=()):
         for floor in self.floors.values():

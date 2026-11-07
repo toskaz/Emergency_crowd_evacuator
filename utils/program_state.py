@@ -109,6 +109,9 @@ class EditorState(ProgramState):
         program.view_options.show_cluster_connections = False
         program.view_options.show_drone_routes = False
 
+    def exit(self, program):
+        program.simulation.grid_world.rebuild_changed_map_data()
+
     def handle_key(self, program, key):
         if key == pygame.K_e:
             program.transition_to(OverviewState())

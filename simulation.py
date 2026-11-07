@@ -31,8 +31,6 @@ class Simulation:
             floor.drone_occupancy_grid = Grid(
                 floor.map_grid.width, floor.map_grid.height, None
             )
-        self.grid_world.rebuild_map_data()
-
         for floor_id, floor in self.grid_world.floors.items():
             for y in range(floor.map_grid.height):
                 for x in range(floor.map_grid.width):
