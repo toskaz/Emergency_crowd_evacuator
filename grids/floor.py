@@ -1,6 +1,11 @@
+import logging
+
 from grids.cluster_grid import ClusterGrid
 from grids.grid import Grid
 from map.cell import CellType
+
+
+logger = logging.getLogger(__name__)
 
 
 class Floor:
@@ -23,4 +28,5 @@ class Floor:
 
         self.simulation_grid = self.wall_and_exit_grid.copy()
         self.cluster_grid = ClusterGrid(self.map_grid)
+        logger.debug("Clusters generated for floor %d", self.id + 1)
         self.distance_map = None

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import logging
 
 from controls.action import Action
 from controls.drone_dqn import DQNDroneController
@@ -7,6 +8,9 @@ from graphics.window import Window
 from simulation import Simulation
 from utils.config import q_table_path
 from utils.program_state import EditorState
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -36,9 +40,11 @@ class ProgramContext:
         self.view_options = ViewOptions()
         self.simulation_options = SimulationOptions()
         self.state = EditorState()
+        logger.debug("Initial application state: %s", self.state.name)
         self.state.enter(self)
 
     def transition_to(self, state):
+        logger.debug("Application state changed: %s -> %s", self.state.name, state.name)
         self.state.exit(self)
         self.state = state
         self.state.enter(self)

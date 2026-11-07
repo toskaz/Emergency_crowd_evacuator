@@ -1,4 +1,5 @@
 from collections import deque
+import logging
 
 from controls.action import Action
 from graph_approach.navigation_graphx import NavigationGraphx
@@ -8,6 +9,9 @@ from grids.grid import Grid
 from grids.map_grid import Map_Grid
 from map.cell import CellType
 from utils.config import image_path
+
+
+logger = logging.getLogger(__name__)
 
 
 ACTION_DIRECTIONS = {
@@ -75,7 +79,14 @@ class Grid_World:
     def set_active_floor(self, floor_id):
         if floor_id not in self.floors:
             return False
+        previous_floor_id = self.active_floor_id
         self.active_floor_id = floor_id
+        if floor_id != previous_floor_id:
+            logger.debug(
+                "Active floor switched: %d -> %d",
+                previous_floor_id + 1,
+                floor_id + 1,
+            )
         return True
 
     def rebuild_map_data(self, floor_ids=None):
@@ -266,12 +277,32 @@ class Grid_World:
 
     def plan_drone_routes(self, drones):
         routes = {}
-        for drone in drones:
+        for drone_index, drone in enumerate(drones, start=1):
             floor_id = getattr(drone, "floor_id", 0)
             cluster_id = self.floors[floor_id].cluster_grid.get(
                 drone.grid_x, drone.grid_y
             )
-            routes[drone] = self.route_to_closest_exit((floor_id, cluster_id))
+            route = self.route_to_closest_exit((floor_id, cluster_id))
+            routes[drone] = route
+            if route:
+                logger.info(
+                    "Found route for drone %d at floor %d, position (%d, %d): "
+                    "%s (%d clusters)",
+                    drone_index,
+                    floor_id + 1,
+                    drone.grid_x,
+                    drone.grid_y,
+                    route,
+                    len(route),
+                )
+            else:
+                logger.warning(
+                    "No route found for drone %d at floor %d, position (%d, %d)",
+                    drone_index,
+                    floor_id + 1,
+                    drone.grid_x,
+                    drone.grid_y,
+                )
         return routes
 
     def build_distance_maps(self):
