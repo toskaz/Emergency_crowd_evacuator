@@ -92,31 +92,38 @@ class Grid_World:
         return True
 
     def rebuild_map_data(self, floor_ids=None):
-        stair_links = self._snapshot_stair_links()
-        pending_cells = None
-        pending_floor_id = None
-        if self.pending_stair_endpoint is not None:
-            pending_floor_id, pending_cluster_id = self.pending_stair_endpoint
-            pending_cluster = self._get_stair_cluster(
-                (pending_floor_id, pending_cluster_id)
-            )
-            if pending_cluster is not None:
-                pending_cells = set(pending_cluster.cells)
-
         floors_to_rebuild = set(self.floors if floor_ids is None else floor_ids)
+        stair_links = self._snapshot_stair_links()
+        old_stair_clusters = self._snapshot_stair_clusters(floors_to_rebuild)
+        pending_stair_endpoint = self.pending_stair_endpoint
 
         for floor_id in floors_to_rebuild:
             self.floors[floor_id].rebuild_map_data()
 
-        self._restore_stair_links(stair_links)
-        if pending_cells is not None:
-            self.pending_stair_endpoint, overlap = self._best_stair_match(
-                pending_floor_id, pending_cells
-            )
-            if not overlap:
-                self.pending_stair_endpoint = None
+        stair_successors = self._restore_stair_links(
+            stair_links, old_stair_clusters, floors_to_rebuild
+        )
+        if pending_stair_endpoint is not None:
+            if pending_stair_endpoint[0] in floors_to_rebuild:
+                self.pending_stair_endpoint = stair_successors.get(
+                    pending_stair_endpoint
+                )
+            else:
+                self.pending_stair_endpoint = pending_stair_endpoint
         self.navigation_graph = NavigationGraphx(self.floors)
         self.build_distance_maps()
+
+    def _snapshot_stair_clusters(self, floor_ids):
+        return {
+            floor_id: [
+                (cluster_id, set(cluster.cells))
+                for cluster_id, cluster in enumerate(
+                    self.floors[floor_id].cluster_grid.clusters
+                )
+                if isinstance(cluster, StairCluster)
+            ]
+            for floor_id in floor_ids
+        }
 
     def _snapshot_stair_links(self):
         links = []
@@ -140,57 +147,158 @@ class Grid_World:
                 if not isinstance(target_cluster, StairCluster):
                     continue
 
-                links.append(
-                    (
-                        floor_id,
-                        set(cluster.cells),
-                        target_floor_id,
-                        set(target_cluster.cells),
-                    )
-                )
+                links.append((source_node, cluster.linked_to))
         return links
 
-    def _best_stair_match(self, floor_id, old_cells):
-        old_cells = set(old_cells)
-        best_node = None
-        best_overlap = 0
+    def _restore_stair_links(self, old_links, old_stair_clusters, floors_to_rebuild):
+        stair_successors = {}
+        for floor_id, old_clusters in old_stair_clusters.items():
+            candidate_lists = {}
+            new_clusters = self.floors[floor_id].cluster_grid.clusters
+            for old_cluster_id, old_cells in old_clusters:
+                candidate_lists[old_cluster_id] = [
+                    new_cluster_id
+                    for new_cluster_id, new_cluster in enumerate(new_clusters)
+                    if isinstance(new_cluster, StairCluster)
+                    and old_cells.intersection(new_cluster.cells)
+                ]
 
-        for cluster_id, cluster in enumerate(self.floors[floor_id].cluster_grid.clusters):
-            if not isinstance(cluster, StairCluster):
-                continue
-            overlap = len(old_cells.intersection(cluster.cells))
-            if overlap > best_overlap:
-                best_node = (floor_id, cluster_id)
-                best_overlap = overlap
-
-        return best_node, best_overlap
-
-    def _restore_stair_links(self, old_links):
-        for floor in self.floors.values():
-            for cluster in floor.cluster_grid.clusters:
-                if isinstance(cluster, StairCluster):
-                    cluster.linked_to = None
-
-        candidates = []
-        for first_floor, first_cells, second_floor, second_cells in old_links:
-            first_node, first_overlap = self._best_stair_match(first_floor, first_cells)
-            second_node, second_overlap = self._best_stair_match(second_floor, second_cells)
-            if first_node is None or second_node is None or first_node[0] == second_node[0]:
-                continue
-            candidates.append(
-                (min(first_overlap, second_overlap), first_node, second_node)
+            assignments = self._assign_stair_successors(candidate_lists)
+            stair_successors.update(
+                {
+                    (floor_id, old_cluster_id): (floor_id, new_cluster_id)
+                    for old_cluster_id, new_cluster_id in assignments.items()
+                }
             )
 
-        candidates.sort(key=lambda candidate: (-candidate[0], candidate[1], candidate[2]))
-        for _, first_node, second_node in candidates:
-            first_cluster = self._get_stair_cluster(first_node)
-            second_cluster = self._get_stair_cluster(second_node)
+        for old_first_node, old_second_node in old_links:
+            first_node = self._restored_stair_node(
+                old_first_node, stair_successors, floors_to_rebuild
+            )
+            second_node = self._restored_stair_node(
+                old_second_node, stair_successors, floors_to_rebuild
+            )
+            first_cluster = (
+                self._get_stair_cluster(first_node) if first_node is not None else None
+            )
+            second_cluster = (
+                self._get_stair_cluster(second_node) if second_node is not None else None
+            )
+
             if first_cluster is None or second_cluster is None:
+                if (
+                    first_cluster is not None
+                    and first_cluster.linked_to == old_second_node
+                ):
+                    first_cluster.linked_to = None
+                if (
+                    second_cluster is not None
+                    and second_cluster.linked_to == old_first_node
+                ):
+                    second_cluster.linked_to = None
                 continue
-            if first_cluster.linked_to is not None or second_cluster.linked_to is not None:
+            if first_node[0] == second_node[0]:
                 continue
+            link_changed = (
+                first_cluster.linked_to != second_node
+                or second_cluster.linked_to != first_node
+            )
             first_cluster.linked_to = second_node
             second_cluster.linked_to = first_node
+            if link_changed:
+                self._log_stair_link(first_node, second_node)
+        return stair_successors
+
+    def _restored_stair_node(self, old_node, stair_successors, floors_to_rebuild):
+        if old_node[0] in floors_to_rebuild:
+            return stair_successors.get(old_node)
+        return old_node
+
+    def _assign_stair_successors(self, candidate_lists):
+        assignments = {}
+        claimants = {}
+
+        for old_cluster_id, candidates in candidate_lists.items():
+            if len(candidates) != 1:
+                continue
+            self._claim_stair_successor(
+                old_cluster_id,
+                candidate_lists,
+                assignments,
+                claimants,
+                set(),
+                set(),
+            )
+
+        for old_cluster_id, candidates in candidate_lists.items():
+            if len(candidates) <= 1 or old_cluster_id in assignments:
+                continue
+            self._claim_stair_successor(
+                old_cluster_id,
+                candidate_lists,
+                assignments,
+                claimants,
+                set(),
+                set(),
+            )
+
+        return assignments
+
+    def _claim_stair_successor(
+        self,
+        old_cluster_id,
+        candidate_lists,
+        assignments,
+        claimants,
+        visited_clusters,
+        visited_candidates,
+    ):
+        if old_cluster_id in visited_clusters:
+            return False
+        visited_clusters.add(old_cluster_id)
+        candidates = candidate_lists[old_cluster_id]
+        current_candidate = assignments.get(old_cluster_id)
+
+        for candidate_id in candidates:
+            if candidate_id == current_candidate or candidate_id in visited_candidates:
+                continue
+            if candidate_id not in claimants:
+                self._set_stair_successor(
+                    old_cluster_id, candidate_id, assignments, claimants
+                )
+                return True
+
+        candidate_index = 0
+        while candidate_index < len(candidates):
+            candidate_id = candidates[candidate_index]
+            if candidate_id == current_candidate or candidate_id in visited_candidates:
+                candidate_index += 1
+                continue
+
+            visited_candidates.add(candidate_id)
+            claimant_id = claimants[candidate_id]
+            if self._claim_stair_successor(
+                claimant_id,
+                candidate_lists,
+                assignments,
+                claimants,
+                visited_clusters,
+                visited_candidates,
+            ):
+                self._set_stair_successor(
+                    old_cluster_id, candidate_id, assignments, claimants
+                )
+                return True
+            candidates.pop(candidate_index)
+        return False
+
+    @staticmethod
+    def _set_stair_successor(old_cluster_id, candidate_id, assignments, claimants):
+        previous_candidate_id = assignments.get(old_cluster_id)
+        if previous_candidate_id is not None:
+            del claimants[previous_candidate_id]
+        assignments[old_cluster_id] = candidate_id
+        claimants[candidate_id] = old_cluster_id
 
     def _get_stair_cluster(self, node):
         floor_id, cluster_id = node
@@ -199,6 +307,16 @@ class Grid_World:
             return None
         cluster = floor.cluster_grid.clusters[cluster_id]
         return cluster if isinstance(cluster, StairCluster) else None
+
+    @staticmethod
+    def _log_stair_link(first_node, second_node):
+        logger.info(
+            "Stair clusters linked: floor %d cluster %d <-> floor %d cluster %d",
+            first_node[0],
+            first_node[1],
+            second_node[0],
+            second_node[1],
+        )
 
     def stair_cluster_at(self, floor_id, x, y):
         floor = self.floors[floor_id]
@@ -256,8 +374,14 @@ class Grid_World:
         if second_cluster.linked_to not in (None, first_node):
             raise ValueError("The second stair cluster is already linked")
 
+        link_changed = (
+            first_cluster.linked_to != second_node
+            or second_cluster.linked_to != first_node
+        )
         first_cluster.linked_to = second_node
         second_cluster.linked_to = first_node
+        if link_changed:
+            self._log_stair_link(first_node, second_node)
         self.rebuild_navigation()
         return True
 
