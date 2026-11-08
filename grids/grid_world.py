@@ -345,10 +345,11 @@ class Grid_World:
 
         target_floor_id = target_node[0]
         occupancy = self._occupancy_grid(target_floor_id, entity_type)
-        reserved = set(reserved)
+        reserved = set(reserved) #occupancy grid is not enough here
         candidates = sorted(
             target_cluster.cells,
             key=lambda cell: (
+                occupancy.get(*cell) is not None,
                 abs(cell[0] - entity.grid_x) + abs(cell[1] - entity.grid_y),
                 cell[1],
                 cell[0],
@@ -357,8 +358,7 @@ class Grid_World:
         for x, y in candidates:
             if (target_floor_id, x, y) in reserved:
                 continue
-            if occupancy.get(x, y) is None:
-                return target_floor_id, x, y
+            return target_floor_id, x, y
         return None
 
     def connect_stair_clusters(self, first_node, second_node):
