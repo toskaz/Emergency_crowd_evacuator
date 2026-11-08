@@ -6,7 +6,7 @@ from controls.drone_dqn import DQNDroneController
 from controls.evacuee_rl import QLearningFollowController
 from graphics.window import Window
 from simulation import Simulation
-from utils.config import q_table_path
+from utils.config import drone_model_path, q_table_path
 from utils.program_state import EditorState
 
 
@@ -32,7 +32,12 @@ class ProgramContext:
     def __init__(self):
         self.simulation = Simulation()
         self.window = Window(self.simulation.grid_world.map_grid)
-        self.drone_controller = DQNDroneController()
+        self.drone_controller = DQNDroneController(training=False)
+        if not self.drone_controller.load(drone_model_path):
+            logger.warning(
+                "Drone model not found at %s; run train_drones.py before simulation",
+                drone_model_path,
+            )
         self.rl_evacuee_controller = QLearningFollowController()
         self.rl_evacuee_controller.load(q_table_path)
         self.drone_routes = {}

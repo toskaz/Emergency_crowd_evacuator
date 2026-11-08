@@ -44,13 +44,22 @@ class DroneQNetwork(nn.Module):
 
 
 class DQNDroneController:
-    def __init__(self):
+    def __init__(self, training=True):
         self.device = torch.device("cpu")
+        self.training = training
+        self.epsilon = 0.15
         self.policy_network = DroneQNetwork().to(self.device)
-        self.target_network = DroneQNetwork().to(self.device)
-        self.target_network.load_state_dict(self.policy_network.state_dict())
-        self.target_network.eval()
-        self.optimizer = torch.optim.Adam(self.policy_network.parameters(), lr=0.0005)
+        self.target_network = None
+        self.optimizer = None
+        if training:
+            self.target_network = DroneQNetwork().to(self.device)
+            self.target_network.load_state_dict(self.policy_network.state_dict())
+            self.target_network.eval()
+            self.optimizer = torch.optim.Adam(
+                self.policy_network.parameters(), lr=0.0005
+            )
+        else:
+            self.policy_network.eval()
         self.replay_buffer = deque(maxlen=20000)
         self.pending_transitions = {}
         self.route_cursors = {}
@@ -75,48 +84,35 @@ class DQNDroneController:
             distance = self._distance_at(
                 world, drone.floor_id, drone.grid_x, drone.grid_y
             )
-            self.pending_transitions[drone] = (
-                state,
-                int(action),
-                distance,
-                route_ids,
-                (drone.floor_id, drone.grid_x, drone.grid_y),
-            )
+            if self.training:
+                self.pending_transitions[drone] = (
+                    state,
+                    int(action),
+                    distance,
+                    route_ids,
+                    (drone.floor_id, drone.grid_x, drone.grid_y),
+                )
             actions.append(action)
 
         return actions
 
     def learn(self, simulation, routes):
+        if not self.training:
+            return
+
         for drone, transition in list(self.pending_transitions.items()):
             state, action, previous_distance, route_ids, previous_position = transition
-            current_position = (drone.floor_id, drone.grid_x, drone.grid_y)
-            current_distance = self._distance_at(
-                simulation.grid_world, *current_position
+            reward = self._transition_reward(
+                simulation,
+                drone,
+                action,
+                previous_distance,
+                route_ids,
+                previous_position,
             )
-            reward = -0.04
-
-            if previous_distance < float("inf") and current_distance < float("inf"):
-                reward += 0.35 * (previous_distance - current_distance)
-
-            if current_position == previous_position and action != Action.STAY:
-                reward -= 0.5
-
-            reward -= self._wall_proximity_penalty(
-                simulation, drone.floor_id, drone.grid_x, drone.grid_y
-            )
-            cluster_id = simulation.grid_world.floors[drone.floor_id].cluster_grid.get(
-                drone.grid_x, drone.grid_y
-            )
-            if (drone.floor_id, cluster_id) in route_ids:
-                reward += 0.06
-            else:
-                reward -= 0.05
-
             done = simulation.grid_world.is_exit(
                 drone.grid_x, drone.grid_y, drone.floor_id
             )
-            if done:
-                reward += 2.0
 
             next_state, _ = self._observe(simulation, drone, routes.get(drone, []))
             next_legal = self._legal_actions(simulation, drone)
@@ -130,6 +126,59 @@ class DQNDroneController:
             self.training_steps += 1
             if self.training_steps % 4 == 0:
                 self._optimize()
+
+    def _transition_reward(
+        self,
+        simulation,
+        drone,
+        action,
+        previous_distance,
+        route_ids,
+        previous_position,
+    ):
+        current_position = (drone.floor_id, drone.grid_x, drone.grid_y)
+        current_distance = self._distance_at(
+            simulation.grid_world, *current_position
+        )
+        reward = -0.04
+
+        if previous_distance < float("inf") and current_distance < float("inf"):
+            reward += 0.35 * (previous_distance - current_distance)
+
+        if current_position == previous_position and action != Action.STAY:
+            reward -= 0.5
+
+        reward -= self._wall_proximity_penalty(
+            simulation, drone.floor_id, drone.grid_x, drone.grid_y
+        )
+        cluster_id = simulation.grid_world.floors[drone.floor_id].cluster_grid.get(
+            drone.grid_x, drone.grid_y
+        )
+        if (drone.floor_id, cluster_id) in route_ids:
+            reward += 0.06
+        else:
+            reward -= 0.05
+
+        if simulation.grid_world.is_exit(
+            drone.grid_x, drone.grid_y, drone.floor_id
+        ):
+            reward += 2.0
+
+        return reward
+
+    def save(self, path):
+        torch.save(self.policy_network.state_dict(), path)
+
+    def load(self, path):
+        try:
+            state_dict = torch.load(path, map_location=self.device, weights_only=True)
+        except FileNotFoundError:
+            return False
+
+        self.policy_network.load_state_dict(state_dict)
+        if self.target_network is not None:
+            self.target_network.load_state_dict(state_dict)
+        return True
 
     def _distance_at(self, world, floor_id, x, y):
         distances = world.floors[floor_id].distance_map
@@ -277,7 +326,7 @@ class DQNDroneController:
 
     def _select_action(self, state, legal_actions, drone, route_ids, simulation):
         self.decision_count += 1
-        epsilon = max(0.03, 0.15 * (0.9995 ** self.decision_count))
+        epsilon = self.epsilon if self.training else 0.0
         if random.random() < epsilon:
             return random.choice(legal_actions)
 
@@ -319,6 +368,9 @@ class DQNDroneController:
         return Action(int(np.argmax(scores)))
 
     def _optimize(self):
+        if self.target_network is None or self.optimizer is None:
+            raise RuntimeError("DQN optimization requires a training controller")
+
         batch = random.sample(self.replay_buffer, 64)
         states, actions, rewards, next_states, dones, next_legal_masks = zip(*batch)
         states = torch.from_numpy(np.stack(states)).to(self.device)

@@ -13,3 +13,4 @@ cluster_size = 3
 
 evacuee_vision_radius = 10
 q_table_path = str(PROJECT_ROOT / "models" / "evacuee_q_table.npy")
+drone_model_path = str(PROJECT_ROOT / "models" / "drone_dqn.pt")
