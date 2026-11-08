@@ -67,6 +67,10 @@ class Grid_World:
         return self.active_floor.simulation_grid
 
     @property
+    def temporary_wall_grid(self):
+        return self.active_floor.temporary_wall_grid
+
+    @property
     def cluster_grid(self):
         return self.active_floor.cluster_grid
 
@@ -491,7 +495,37 @@ class Grid_World:
         return (
             floor.map_grid.in_bounds(x, y)
             and floor.wall_and_exit_grid.get(x, y) != CellType.WALL
+            and not floor.temporary_wall_grid.get(x, y)
         )
+
+    def set_temporary_wall(self, floor_id, x, y, enabled):
+        floor = self.floors[floor_id]
+        if not floor.map_grid.in_bounds(x, y):
+            return False
+        if enabled and (
+            floor.map_grid.get(x, y) != CellType.EMPTY
+            or floor.evacuee_occupancy_grid.get(x, y) is not None
+            or floor.drone_occupancy_grid.get(x, y) is not None
+        ):
+            return False
+        if floor.temporary_wall_grid.get(x, y) == enabled:
+            return False
+
+        floor.temporary_wall_grid.set(x, y, enabled)
+        self.build_distance_maps()
+        return True
+
+    def clear_temporary_walls(self):
+        changed = False
+        for floor in self.floors.values():
+            changed = changed or any(
+                any(row) for row in floor.temporary_wall_grid.cells
+            )
+            floor.temporary_wall_grid = Grid(
+                floor.map_grid.width, floor.map_grid.height, False
+            )
+        if changed:
+            self.build_distance_maps()
 
     def _get_floor(self, floor_id=None):
         return self.floors[self.active_floor_id if floor_id is None else floor_id]

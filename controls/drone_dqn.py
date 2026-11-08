@@ -187,7 +187,8 @@ class DQNDroneController:
         return distances[y][x]
 
     def _wall_proximity_penalty(self, simulation, floor_id, x, y):
-        grid = simulation.grid_world.floors[floor_id].map_grid
+        floor = simulation.grid_world.floors[floor_id]
+        grid = floor.map_grid
         closest_wall = WALL_CLEARANCE_RADIUS + 1
 
         for delta_y in range(-WALL_CLEARANCE_RADIUS, WALL_CLEARANCE_RADIUS + 1):
@@ -199,7 +200,10 @@ class DQNDroneController:
 
                 if not grid.in_bounds(neighbor_x, neighbor_y):
                     closest_wall = min(closest_wall, distance)
-                elif grid.get(neighbor_x, neighbor_y) == CellType.WALL:
+                elif (
+                    grid.get(neighbor_x, neighbor_y) == CellType.WALL
+                    or floor.temporary_wall_grid.get(neighbor_x, neighbor_y)
+                ):
                     closest_wall = min(closest_wall, distance)
 
         if closest_wall > WALL_CLEARANCE_RADIUS:
@@ -274,7 +278,7 @@ class DQNDroneController:
 
                 cell_type = floor.simulation_grid.get(x, y)
                 terrain_type = floor.map_grid.get(x, y)
-                if cell_type == CellType.WALL:
+                if cell_type == CellType.WALL or floor.temporary_wall_grid.get(x, y):
                     state[0, patch_y, patch_x] = 1.0
                 if cell_type == CellType.EVACUEE:
                     state[1, patch_y, patch_x] = 1.0

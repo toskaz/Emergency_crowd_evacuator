@@ -27,6 +27,9 @@ class Floor:
                     self.wall_and_exit_grid.set(x, y, cell_type)
 
         self.simulation_grid = self.wall_and_exit_grid.copy()
+        self.temporary_wall_grid = Grid(
+            self.map_grid.width, self.map_grid.height, False
+        )
         self.cluster_grid = ClusterGrid(self.map_grid)
         logger.debug("Clusters generated for floor %d", self.id + 1)
         self.distance_map = None

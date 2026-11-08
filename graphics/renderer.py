@@ -68,6 +68,31 @@ def draw_map(screen, grid, show_grid):
                 )
 
 
+def draw_temporary_walls(screen, grid):
+    for y in range(grid.height):
+        for x in range(grid.width):
+            if not grid.get(x, y):
+                continue
+
+            pos_x, pos_y = grid_to_pixel(x, y)
+            rect = (pos_x, pos_y, drawing_size, drawing_size)
+            pygame.draw.rect(screen, Color.TEMPORARY_WALL.value, rect)
+            pygame.draw.line(
+                screen,
+                Color.WALL.value,
+                (pos_x + 2, pos_y + 2),
+                (pos_x + drawing_size - 3, pos_y + drawing_size - 3),
+                2,
+            )
+            pygame.draw.line(
+                screen,
+                Color.WALL.value,
+                (pos_x + drawing_size - 3, pos_y + 2),
+                (pos_x + 2, pos_y + drawing_size - 3),
+                2,
+            )
+
+
 def draw_key_bindings(screen, font, key_bindings):
     if not key_bindings:
         return

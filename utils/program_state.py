@@ -154,6 +154,7 @@ class OverviewState(ProgramState):
     )
 
     def enter(self, program):
+        program.simulation.grid_world.clear_temporary_walls()
         program.simulation.prepare()
         program.drone_routes = {}
         program.drone_controller.pending_transitions.clear()
@@ -297,6 +298,8 @@ class SimulationEditorState(ProgramState):
     floor_switch_enabled = True
     key_bindings = (
         "Enter: return to pause",
+        "Left click: place temporary wall",
+        "Right click: erase temporary wall",
         "C: toggle clusters",
         "B: toggle connections",
         "V: toggle drone routes",
@@ -306,6 +309,16 @@ class SimulationEditorState(ProgramState):
     def handle_key(self, program, key):
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             program.transition_to(SimulationPausedState())
+
+    def handle_mouse(self, program, event):
+        if event.button not in (1, 3):
+            return
+
+        world = program.simulation.grid_world
+        grid_x, grid_y = pixel_to_grid(*event.pos)
+        world.set_temporary_wall(
+            world.active_floor_id, grid_x, grid_y, event.button == 1
+        )
 
 
 class ResultsState(ProgramState):

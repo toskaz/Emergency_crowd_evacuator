@@ -1,6 +1,6 @@
 import pygame
 from utils.config import drawing_size
-from graphics.renderer import draw_map, draw_ui, draw_key_bindings, draw_navigation, draw_clusters, draw_cluster_edges
+from graphics.renderer import draw_map, draw_ui, draw_key_bindings, draw_navigation, draw_clusters, draw_cluster_edges, draw_temporary_walls
 
 
 class Window:
@@ -41,6 +41,10 @@ class Window:
 
     def _draw_view(self, context, grid, key_bindings, selected_tool=None):
         self._draw_grid(context, grid)
+        if context.simulation.started:
+            draw_temporary_walls(
+                self.screen, context.simulation.grid_world.temporary_wall_grid
+            )
         if context.state.render_options_enabled:
             self._draw_overlays(context)
         self._draw_ui(context, key_bindings, selected_tool)
