@@ -13,12 +13,28 @@ class Program:
         clock = pygame.time.Clock()
         context = self.context
 
-        while context.window.is_open:
+        while context.running:
+            time_delta = clock.tick(60) / 1000.0
+
             handle_input(context)
-            if not context.window.is_open:
+
+            if not context.running:
                 break
+
+            if context.ui_manager is not None:
+                context.ui_manager.update(time_delta)
 
             context.state.update(context)
             context.state.render(context)
 
-            clock.tick(60)
+            screen = (
+                context.window.screen
+                if context.window is not None
+                else context.screen
+            )
+            if context.ui_manager is not None and screen is not None:
+                context.ui_manager.draw_ui(screen)
+
+            pygame.display.flip()
+
+        pygame.quit()
