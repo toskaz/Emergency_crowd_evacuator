@@ -4,6 +4,7 @@ import logging
 from controls.action import Action
 from controls.drone_dqn import DQNDroneController
 from controls.evacuee_rl import QLearningFollowController
+from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from simulation import Simulation
 from utils.config import drone_model_path, q_table_path
@@ -41,6 +42,7 @@ class ProgramContext:
         self.rl_evacuee_controller = QLearningFollowController()
         self.rl_evacuee_controller.load(q_table_path)
         self.drone_routes = {}
+        self.coordinator = GlobalCoordinator(self.simulation.grid_world)
         self.link_stairs_mode = False
         self.view_options = ViewOptions()
         self.simulation_options = SimulationOptions()
@@ -55,5 +57,13 @@ class ProgramContext:
         self.state.enter(self)
 
     def plan_drone_routes(self):
-        world = self.simulation.grid_world
-        self.drone_routes = world.plan_drone_routes(self.simulation.drones)
+        self.drone_routes = self.coordinator.plan_initial_routes(
+            self.simulation.drones
+        )
+
+    def replan_drone_routes_after_hazard(self):
+        self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
+            self.simulation.drones
+        )
+        for drone in replanned_drones:
+            self.drone_controller.route_cursors.pop(drone, None)

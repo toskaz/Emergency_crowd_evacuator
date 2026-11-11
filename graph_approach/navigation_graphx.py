@@ -12,8 +12,11 @@ class NavigationGraphx:
     def __init__(self, floors):
         self.floors = floors
         self.G = nx.Graph()
+        self.rebuild_base_graph()
 
-        for floor_id, floor in floors.items():
+    def rebuild_base_graph(self):
+        self.G.clear()
+        for floor_id, floor in self.floors.items():
             cluster_grid = floor.cluster_grid
             self.G.add_nodes_from(
                 (floor_id, cluster_id)
@@ -23,7 +26,6 @@ class NavigationGraphx:
                 ((floor_id, first), (floor_id, second))
                 for first, second in cluster_grid.adjacent_cluster_pairs
             )
-
             for cluster_id, cluster in enumerate(cluster_grid.clusters):
                 if cluster.type is ClusterType.STAIRS and cluster.linked_to is not None:
                     self.G.add_edge(

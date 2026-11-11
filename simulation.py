@@ -70,6 +70,11 @@ class Simulation:
         self.evacuees[:] = [evacuee for evacuee in self.evacuees if evacuee not in evacuated]
         self.evacuated_count += len(evacuated)
 
+        finished_drones = [drone for drone in self.drones if self.touching_exit(drone)]
+        for drone in finished_drones:
+            self.grid_world.remove_drone(drone)
+        self.drones[:] = [drone for drone in self.drones if drone not in finished_drones]
+
     def step(self, evacuee_actions, drone_actions=None):
         if not self.started:
             self.start()
@@ -79,6 +84,7 @@ class Simulation:
 
         if drone_actions is not None:
             self.grid_world.step_drones(self.drones, drone_actions)
+            self.remove_evacuated()
 
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.step_count += 1
