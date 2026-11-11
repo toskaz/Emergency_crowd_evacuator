@@ -3,10 +3,9 @@ import numpy as np
 
 from grids.grid import Grid
 from map.cell import CellType
-from utils.config import acceptance_threshold, block_size
 
 
-def extract_map_image(image_path, exit_kernel_size=5):
+def extract_map_image(image_path, block_size, exit_kernel_size=5, acceptance_threshold=0.40):
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise FileNotFoundError(f"Could not load image: {image_path}")
@@ -17,12 +16,12 @@ def extract_map_image(image_path, exit_kernel_size=5):
     grid_height = (image_height + block_size - 1) // block_size
     grid = Grid(grid_width, grid_height, CellType.EMPTY)
 
-    _recognize_walls(grid, thresholded_image)
+    _recognize_walls(grid, thresholded_image, block_size, acceptance_threshold)
     _mark_exits_on_grid(grid, exit_kernel_size)
     return grid
 
 
-def _recognize_walls(grid, thresholded_image):
+def _recognize_walls(grid, thresholded_image, block_size, acceptance_threshold):
     for y in range(grid.height):
         for x in range(grid.width):
             block = thresholded_image[

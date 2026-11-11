@@ -4,7 +4,8 @@ import pygame
 from editor.tool import Tool
 from grids.cluster import ClusterType
 from grids.coordinates import grid_to_pixel, grid_to_pixel_center
-from utils.config import cluster_size, drawing_size
+import utils.config as config
+from utils.config import cluster_size
 
 CLUSTER_COLORS = ((40, 170, 225), (245, 170, 60))
 
@@ -46,7 +47,7 @@ def draw_map(screen, grid, show_grid):
             pygame.draw.rect(
                 screen,
                 color,
-                (pos_x, pos_y, drawing_size, drawing_size)
+                (pos_x, pos_y, config.drawing_size, config.drawing_size)
             )
 
             marker_color = ENTITY_COLORS.get(value)
@@ -55,7 +56,7 @@ def draw_map(screen, grid, show_grid):
                     screen,
                     marker_color,
                     grid_to_pixel_center(x, y),
-                    drawing_size // 2,
+                    config.drawing_size // 2,
                 )
 
             # Draw the grid line
@@ -63,7 +64,7 @@ def draw_map(screen, grid, show_grid):
                 pygame.draw.rect(
                     screen,
                     Color.GRID.value,
-                    (pos_x, pos_y, drawing_size, drawing_size),
+                    (pos_x, pos_y, config.drawing_size, config.drawing_size),
                     1
                 )
 
@@ -75,20 +76,20 @@ def draw_temporary_walls(screen, grid):
                 continue
 
             pos_x, pos_y = grid_to_pixel(x, y)
-            rect = (pos_x, pos_y, drawing_size, drawing_size)
+            rect = (pos_x, pos_y, config.drawing_size, config.drawing_size)
             pygame.draw.rect(screen, Color.TEMPORARY_WALL.value, rect)
             pygame.draw.line(
                 screen,
                 Color.WALL.value,
                 (pos_x + 2, pos_y + 2),
-                (pos_x + drawing_size - 3, pos_y + drawing_size - 3),
+                (pos_x + config.drawing_size - 3, pos_y + config.drawing_size - 3),
                 2,
             )
             pygame.draw.line(
                 screen,
                 Color.WALL.value,
-                (pos_x + drawing_size - 3, pos_y + 2),
-                (pos_x + 2, pos_y + drawing_size - 3),
+                (pos_x + config.drawing_size - 3, pos_y + 2),
+                (pos_x + 2, pos_y + config.drawing_size - 3),
                 2,
             )
 
@@ -207,7 +208,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
                 else cluster_color(x, y)
             )
 
-            pygame.draw.rect(overlay,(*color, alpha),(px, py, drawing_size, drawing_size))
+            pygame.draw.rect(overlay,(*color, alpha),(px, py, config.drawing_size, config.drawing_size))
 
     screen.blit(overlay, (0, 0))
 
@@ -223,3 +224,39 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
         label = font.render(str(cluster_id), True, Color.BACKGROUND.value)
         label_rect = label.get_rect(center=(round(pixel_x), round(pixel_y)))
         screen.blit(label, label_rect)
+
+
+def draw_stair_highlights(screen, world, font=None, link_mode=False):
+    if font is None:
+        font = pygame.font.Font(None, 18)
+
+    active_floor = world.active_floor
+    active_floor_id = world.active_floor_id
+
+    for cluster_id, cluster in enumerate(active_floor.cluster_grid.clusters):
+        if cluster.type is not ClusterType.STAIRS or not cluster.cells:
+            continue
+
+        is_pending = (world.pending_stair_endpoint == (active_floor_id, cluster_id))
+
+        min_x = min(x for x, y in cluster.cells)
+        min_y = min(y for x, y in cluster.cells)
+        max_x = max(x for x, y in cluster.cells)
+        max_y = max(y for x, y in cluster.cells)
+
+        rect_x, rect_y = grid_to_pixel(min_x, min_y)
+        rect_w = (max_x - min_x + 1) * config.drawing_size
+        rect_h = (max_y - min_y + 1) * config.drawing_size
+        box = pygame.Rect(rect_x - 2, rect_y - 2, rect_w + 4, rect_h + 4)
+
+        if is_pending:
+            pygame.draw.rect(screen, (255, 230, 50), box, 3)
+            badge = font.render("WYBRANE", True, (255, 230, 50))
+            screen.blit(badge, (box.centerx - badge.get_width() // 2, max(2, box.top - 14)))
+        elif link_mode:
+            pygame.draw.rect(screen, (80, 200, 255), box, 2)
+
+        if cluster.linked_to is not None:
+            target_floor_num = cluster.linked_to[0] + 1
+            badge = font.render(f"P{target_floor_num}", True, (100, 255, 140))
+            screen.blit(badge, (box.centerx - badge.get_width() // 2, min(screen.get_height() - 14, box.bottom + 2)))

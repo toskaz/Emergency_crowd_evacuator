@@ -1,6 +1,15 @@
 import pygame
 from utils.config import drawing_size
-from graphics.renderer import draw_map, draw_ui, draw_key_bindings, draw_navigation, draw_clusters, draw_cluster_edges, draw_temporary_walls
+from graphics.renderer import (
+    draw_map,
+    draw_ui,
+    draw_key_bindings,
+    draw_navigation,
+    draw_clusters,
+    draw_cluster_edges,
+    draw_temporary_walls,
+    draw_stair_highlights,
+)
 
 
 class Window:
@@ -8,10 +17,10 @@ class Window:
     def __init__(self, grid):
         pygame.init()
 
-        screen_width = grid.width * drawing_size
-        screen_height = grid.height * drawing_size
-
-        self.screen = pygame.display.set_mode((screen_width, screen_height))
+        self.screen = pygame.display.get_surface() 
+        if self.screen is None:
+            from utils.config import drawing_size
+            self.screen = pygame.display.set_mode((grid.width * drawing_size + 250, 600))
 
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
@@ -48,7 +57,6 @@ class Window:
         if context.state.render_options_enabled:
             self._draw_overlays(context)
         self._draw_ui(context, key_bindings, selected_tool)
-        pygame.display.flip()
 
     def _draw_grid(self, context, grid):
         draw_map(self.screen, grid, context.view_options.show_grid)
@@ -60,6 +68,13 @@ class Window:
             draw_cluster_edges(self.screen, world.cluster_grid)
         if options.show_clusters:
             draw_clusters(self.screen, world.cluster_grid, font=self.small_font)
+        if options.show_clusters or context.link_stairs_mode:
+            draw_stair_highlights(
+                self.screen,
+                world,
+                font=self.small_font,
+                link_mode=context.link_stairs_mode,
+            )
         if options.show_drone_routes:
             draw_navigation(
                 self.screen,
