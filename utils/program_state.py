@@ -912,6 +912,9 @@ class SimulationEditorState(ProgramState):
         "G: toggle grid",
     )
 
+    def exit(self, program):
+        program.replan_drone_routes_after_hazard()
+
     def handle_key(self, program, key):
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             program.transition_to(SimulationPausedState())

@@ -7,6 +7,7 @@ import pygame_gui
 from controls.action import Action
 from controls.drone_dqn import DQNDroneController
 from controls.evacuee_rl import QLearningFollowController
+from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from simulation import Simulation
 from utils.config import drawing_size, drone_model_path, q_table_path
@@ -47,6 +48,7 @@ class ProgramContext:
         self.window = None
         self.drone_controller = None
         self.rl_evacuee_controller = None
+        self.coordinator = None
         self.imported_image_path = None
         self.running = True
 
@@ -87,6 +89,7 @@ class ProgramContext:
             )
         self.rl_evacuee_controller = QLearningFollowController()
         self.rl_evacuee_controller.load(q_table_path)
+        self.coordinator = GlobalCoordinator(self.simulation.grid_world)
 
     def initialize_world(self, map_grid):
         if self.simulation is None:
@@ -102,6 +105,8 @@ class ProgramContext:
         self._center_camera(map_grid, screen_width, screen_height)
         if self.drone_controller is None:
             self._load_controllers()
+        else:
+            self.coordinator = GlobalCoordinator(self.simulation.grid_world)
 
     def initialize_world_from_dict(self, data):
         self.simulation = Simulation()
@@ -116,6 +121,8 @@ class ProgramContext:
         self._center_camera(map_grid, screen_width, screen_height)
         if self.drone_controller is None:
             self._load_controllers()
+        else:
+            self.coordinator = GlobalCoordinator(self.simulation.grid_world)
 
     def update_window_for_active_floor(self):
         if self.simulation is None:
@@ -137,5 +144,13 @@ class ProgramContext:
         self.state.enter(self)
 
     def plan_drone_routes(self):
-        world = self.simulation.grid_world
-        self.drone_routes = world.plan_drone_routes(self.simulation.drones)
+        self.drone_routes = self.coordinator.plan_initial_routes(
+            self.simulation.drones
+        )
+
+    def replan_drone_routes_after_hazard(self):
+        self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
+            self.simulation.drones
+        )
+        for drone in replanned_drones:
+            self.drone_controller.route_cursors.pop(drone, None)
