@@ -10,4 +10,4 @@ class Color(Enum):
     TEMPORARY_WALL = (220, 85, 55)
     GRID = (200, 200, 200)
     NAVIGATION = (240, 150, 40)
-    BACKGROUND = (0, 0, 0)
+    BACKGROUND = (255,255,255)

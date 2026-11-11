@@ -8,7 +8,6 @@ from grids.floor import Floor
 from grids.grid import Grid
 from grids.map_grid import Map_Grid
 from map.cell import CellType
-from utils.config import image_path
 
 
 logger = logging.getLogger(__name__)
@@ -24,23 +23,87 @@ ACTION_DIRECTIONS = {
 
 
 class Grid_World:
-    FLOOR_COUNT = 2
 
     def __init__(self):
-        source_grid = Map_Grid.from_image(image_path)
         self.floors = {}
-        for floor_id in range(self.FLOOR_COUNT):
-            map_grid = Map_Grid(source_grid.width, source_grid.height)
-            map_grid.cells = [row.copy() for row in source_grid.cells]
-            self.floors[floor_id] = Floor(floor_id, map_grid)
-
         self.active_floor_id = 0
         self.pending_stair_endpoint = None
         self.stair_link_error = None
         self.map_changed = False
         self.changed_floor_id = None
         self.navigation_graph = None
+        if self.floors:
+            self.rebuild_map_data()
+
+    def add_floor_from_map(self, map_grid):
+        floor_id = len(self.floors)
+        self.floors[floor_id] = Floor(floor_id, map_grid)
+        self.active_floor_id = floor_id if floor_id == 0 else self.active_floor_id
         self.rebuild_map_data()
+
+    def to_dict(self):
+        floors = []
+        for floor_id, floor in self.floors.items():
+            cells = [
+                [int(floor.map_grid.get(x, y)) for x in range(floor.map_grid.width)]
+                for y in range(floor.map_grid.height)
+            ]
+            floors.append({
+                "floor_id": floor_id,
+                "width": floor.map_grid.width,
+                "height": floor.map_grid.height,
+                "cells": cells,
+            })
+
+        stair_links = []
+        seen_links = set()
+        for floor_id, floor in self.floors.items():
+            for cluster_id, cluster in enumerate(floor.cluster_grid.clusters):
+                if not isinstance(cluster, StairCluster) or cluster.linked_to is None:
+                    continue
+                source_node = (floor_id, cluster_id)
+                target_node = cluster.linked_to
+                pair = (min(source_node, target_node), max(source_node, target_node))
+                if pair in seen_links:
+                    continue
+                seen_links.add(pair)
+                stair_links.append([list(source_node), list(target_node)])
+
+        return {"floors": floors, "stair_links": stair_links}
+
+    def from_dict(self, data):
+        self.floors = {}
+        self.pending_stair_endpoint = None
+        self.stair_link_error = None
+        self.map_changed = False
+        self.changed_floor_id = None
+        self.navigation_graph = None
+
+        for floor_data in data["floors"]:
+            floor_id = floor_data["floor_id"]
+            width = floor_data["width"]
+            height = floor_data["height"]
+            map_grid = Map_Grid(width, height, CellType.EMPTY)
+            for y, row in enumerate(floor_data["cells"]):
+                for x, cell_value in enumerate(row):
+                    map_grid.set(x, y, CellType(cell_value))
+            self.floors[floor_id] = Floor(floor_id, map_grid)
+
+        if self.floors:
+            self.active_floor_id = 0
+
+        self.rebuild_map_data()
+
+        for source_list, target_list in data.get("stair_links", []):
+            source_node = tuple(source_list)
+            target_node = tuple(target_list)
+            source_cluster = self._get_stair_cluster(source_node)
+            target_cluster = self._get_stair_cluster(target_node)
+            if source_cluster is not None and target_cluster is not None:
+                source_cluster.linked_to = target_node
+                target_cluster.linked_to = source_node
+
+        self.rebuild_navigation()
 
     @property
     def active_floor(self):
