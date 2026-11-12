@@ -2,11 +2,25 @@ from controls.line_of_sight import can_see
 from entities.drone import Drone
 from entities.evacuee import Evacuee
 from grids.grid import Grid
+from grids.map_grid import Map_Grid
 from map.cell import CellType
+from utils.config import acceptance_threshold, block_size, image_path
 
 
 MIN_DRONE_DISTANCE_TO_EXIT = 25
 MAX_EVACUEE_DISTANCE_TO_DRONE = 6
+DEFAULT_FLOOR_COUNT = 2
+
+
+def load_default_map(simulation, floor_count=DEFAULT_FLOOR_COUNT):
+    world = simulation.grid_world
+    if world.floors:
+        return
+    for _ in range(floor_count):
+        map_grid = Map_Grid.from_image(
+            image_path, block_size, acceptance_threshold=acceptance_threshold
+        )
+        world.add_floor_from_map(map_grid)
 
 
 def place_random_scenario(simulation, rng, evacuee_count, floor_id=0):
