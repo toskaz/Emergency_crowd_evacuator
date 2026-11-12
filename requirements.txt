@@ -4,3 +4,4 @@ numpy
 networkx
 torch
 gymnasium
+pygame_gui

@@ -11,13 +11,18 @@ from controls.drone_dqn import (
     DQNDroneController,
 )
 from simulation import Simulation
-from training.scenario import drone_start_cells, place_random_scenario
+from training.scenario import (
+    drone_start_cells,
+    load_default_map,
+    place_random_scenario,
+)
 
 
 class DroneNavigationEnv(gym.Env):
     def __init__(self, max_episode_steps=400):
         super().__init__()
         self.simulation = Simulation()
+        load_default_map(self.simulation)
         self.controller = DQNDroneController(training=True)
         self.max_episode_steps = max_episode_steps
         self.observation_space = spaces.Box(

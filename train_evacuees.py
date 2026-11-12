@@ -3,7 +3,7 @@ import random
 from controls.evacuee_rl import QLearningFollowController
 from controls.scripted_drone import ScriptedDroneController
 from simulation import Simulation
-from training.scenario import place_random_scenario
+from training.scenario import load_default_map, place_random_scenario
 from utils.config import q_table_path
 
 
@@ -36,6 +36,7 @@ def train(seed=0):
     random.seed(seed)
     rng = random.Random(seed)
     simulation = Simulation()
+    load_default_map(simulation)
     evacuees = QLearningFollowController(learning=True)
     drones = ScriptedDroneController()
 
