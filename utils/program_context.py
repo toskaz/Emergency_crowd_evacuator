@@ -73,10 +73,12 @@ class ProgramContext:
             max_w, max_h = display_info.current_w - 50, display_info.current_h - 100
             desired_w = map_grid.width * drawing_size + 250 
             desired_h = max(600, map_grid.height * drawing_size) 
-            current_w, current_h = self.screen.get_size() if self.screen else (desired_w, desired_h)
+
+            #current_w, current_h = self.screen.get_size() if self.screen else (desired_w, desired_h)
+            min_w, min_h = CALIBRATION_WINDOW_SIZE
         
-            target_w = max(current_w, min(desired_w, max_w))
-            target_h = max(current_h, min(desired_h, max_h))
+            target_w = max(min_w, min(desired_w, max_w))
+            target_h = max(min_h, min(desired_h, max_h))
         
             return target_w, target_h
 
