@@ -576,6 +576,7 @@ class EditorState(ProgramState):
         self._rebuild_ui(program)
 
     def on_floor_changed(self, program):
+        program.simulation.grid_world.rebuild_changed_map_data()
         self._rebuild_ui(program)
 
     def _rebuild_ui(self, program):

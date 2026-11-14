@@ -29,8 +29,7 @@ class Grid_World:
         self.active_floor_id = 0
         self.pending_stair_endpoint = None
         self.stair_link_error = None
-        self.map_changed = False
-        self.changed_floor_id = None
+        self.changed_floor_ids = set()
         self.navigation_graph = None
         if self.floors:
             self.rebuild_map_data()
@@ -75,8 +74,7 @@ class Grid_World:
         self.floors = {}
         self.pending_stair_endpoint = None
         self.stair_link_error = None
-        self.map_changed = False
-        self.changed_floor_id = None
+        self.changed_floor_ids = set()
         self.navigation_graph = None
 
         for floor_data in data["floors"]:
@@ -179,6 +177,7 @@ class Grid_World:
                 self.pending_stair_endpoint = pending_stair_endpoint
         self.navigation_graph = NavigationGraphx(self.floors)
         self.build_distance_maps()
+        self.changed_floor_ids.difference_update(floors_to_rebuild)
 
     def _snapshot_stair_clusters(self, floor_ids):
         return {
@@ -598,16 +597,13 @@ class Grid_World:
         if floor.map_grid.get(x, y) == cell_type:
             return False
         floor.map_grid.set(x, y, cell_type)
-        self.map_changed = True
-        self.changed_floor_id = floor_id
+        self.changed_floor_ids.add(floor_id)
         return True
 
     def rebuild_changed_map_data(self):
-        if not self.map_changed:
+        if not self.changed_floor_ids:
             return False
-        self.rebuild_map_data({self.changed_floor_id})
-        self.changed_floor_id = None
-        self.map_changed = False
+        self.rebuild_map_data(self.changed_floor_ids)
         return True
 
     def rebuild_simulation_grid(self, evacuees=(), drones=()):
