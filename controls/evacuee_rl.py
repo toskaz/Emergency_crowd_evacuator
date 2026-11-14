@@ -174,10 +174,26 @@ def find_leaders(simulation):
     world = simulation.grid_world
     leaders = {}
     guides = list(simulation.drones)
-    found_new_leader = True
+    guides_by_group = {}
+    for drone in guides:
+        guides_by_group.setdefault(drone.drone_id, []).append(drone)
 
-    while found_new_leader:
+    while True:
         found_new_leader = False
+        for evacuee in simulation.evacuees:
+            if evacuee in leaders or evacuee.assigned_drone_id is None:
+                continue
+            same_group = guides_by_group.get(evacuee.assigned_drone_id, [])
+            leader = nearest_visible(world, evacuee, same_group)
+            if leader is not None:
+                leaders[evacuee] = leader
+                guides.append(evacuee)
+                guides_by_group.setdefault(evacuee.assigned_drone_id, []).append(evacuee)
+                found_new_leader = True
+
+        if found_new_leader:
+            continue
+
         for evacuee in simulation.evacuees:
             if evacuee in leaders:
                 continue
@@ -185,9 +201,10 @@ def find_leaders(simulation):
             if leader is not None:
                 leaders[evacuee] = leader
                 guides.append(evacuee)
-                found_new_leader = True
-
-    return leaders
+                guides_by_group.setdefault(evacuee.assigned_drone_id, []).append(evacuee)
+                break
+        else:
+            return leaders
 
 
 def nearest_visible(world, evacuee, candidates):

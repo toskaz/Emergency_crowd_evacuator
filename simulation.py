@@ -1,3 +1,4 @@
+from controls.drone_assignment import assign_drone_groups
 from grids.grid_world import Grid_World
 from grids.grid import Grid
 from entities.evacuee import Evacuee
@@ -18,6 +19,7 @@ class Simulation:
         self.prepared = False
 
     def prepare(self):
+        self.grid_world.rebuild_changed_map_data()
         self.evacuees.clear()
         self.drones.clear()
         self.step_count = 0
@@ -44,6 +46,7 @@ class Simulation:
                         self.drones.append(drone)
                         self.grid_world.add_drone(drone)
 
+        assign_drone_groups(self.grid_world, self.drones, self.evacuees)
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.prepared = True
 

@@ -1,5 +1,5 @@
 from map.cell import CellType
-from graphics.colors import Color
+from graphics.colors import Color, assignment_color
 import pygame
 from editor.tool import Tool
 from grids.cluster import ClusterType
@@ -67,6 +67,26 @@ def draw_map(screen, grid, show_grid):
                     (pos_x, pos_y, config.drawing_size, config.drawing_size),
                     1
                 )
+
+
+def draw_assignment_groups(screen, simulation, floor_id):
+    for evacuee in simulation.evacuees:
+        if evacuee.floor_id != floor_id:
+            continue
+        pygame.draw.circle(
+            screen,
+            assignment_color(evacuee.assigned_drone_id),
+            grid_to_pixel_center(evacuee.grid_x, evacuee.grid_y),
+            config.drawing_size // 2,
+        )
+
+    for drone in simulation.drones:
+        if drone.floor_id != floor_id:
+            continue
+        pixel_x, pixel_y = grid_to_pixel(drone.grid_x, drone.grid_y)
+        rect = pygame.Rect(pixel_x, pixel_y, config.drawing_size, config.drawing_size)
+        pygame.draw.rect(screen, assignment_color(drone.drone_id), rect)
+        pygame.draw.rect(screen, Color.WALL.value, rect, 1)
 
 
 def draw_temporary_walls(screen, grid):

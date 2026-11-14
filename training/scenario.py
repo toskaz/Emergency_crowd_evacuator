@@ -1,3 +1,4 @@
+from controls.drone_assignment import assign_drone_groups
 from controls.line_of_sight import can_see
 from entities.drone import Drone
 from entities.evacuee import Evacuee
@@ -38,6 +39,7 @@ def place_random_scenario(simulation, rng, evacuee_count, floor_id=0):
         simulation.evacuees.append(evacuee)
         world.add_evacuee(evacuee)
 
+    assign_drone_groups(world, simulation.drones, simulation.evacuees)
     world.rebuild_simulation_grid(simulation.evacuees, simulation.drones)
     simulation.started = True
 

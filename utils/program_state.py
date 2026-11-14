@@ -676,6 +676,7 @@ class OverviewState(ProgramState):
     key_bindings = (
         "Strzałki: przesuwanie mapy (Pan)",
         "L: tryb łączenia schodów",
+        "H: kolory przypisań",
         "C: toggle clusters",
         "B: toggle connections",
         "V: toggle drone routes",
@@ -685,6 +686,7 @@ class OverviewState(ProgramState):
     def __init__(self):
         self._save_button = None
         self._menu_button = None
+        self._btn_assignments = None
 
     def enter(self, program):
         program.simulation.grid_world.clear_temporary_walls()
@@ -713,6 +715,12 @@ class OverviewState(ProgramState):
         y += btn_h + 4
         self._btn_edit = pygame_gui.elements.UIButton(pygame.Rect(panel_x, y, btn_w, btn_h), "Edytor Mapy", manager=program.ui_manager)
         y += btn_h + 4
+        self._btn_assignments = pygame_gui.elements.UIButton(
+            pygame.Rect(panel_x, y, btn_w, btn_h),
+            "Ukryj przypisania" if program.view_options.show_assignments else "Pokaż przypisania",
+            manager=program.ui_manager,
+        )
+        y += btn_h + 4
         self._btn_link = pygame_gui.elements.UIButton(pygame.Rect(panel_x, y, btn_w, btn_h), "Łączenie Schodów", manager=program.ui_manager)
         y += btn_h + 15
         self._btn_zoom_in = pygame_gui.elements.UIButton(pygame.Rect(panel_x, y, btn_w//2 - 2, btn_h), "Zoom +", manager=program.ui_manager)
@@ -734,6 +742,8 @@ class OverviewState(ProgramState):
     def handle_ui_event(self, program, event):
         if event.ui_element == self._btn_sim: program.transition_to(SimulationRunningState())
         elif event.ui_element == self._btn_edit: program.transition_to(EditorState())
+        elif event.ui_element == self._btn_assignments:
+            self._toggle_assignments(program)
         elif event.ui_element == self._btn_link:
             program.link_stairs_mode = not program.link_stairs_mode
             program.simulation.grid_world.pending_stair_endpoint = None
@@ -764,13 +774,28 @@ class OverviewState(ProgramState):
             import utils.config as config
             config.drawing_size = max(2, config.drawing_size - 2)
 
+    def _toggle_assignments(self, program):
+        program.view_options.show_assignments = not program.view_options.show_assignments
+        if self._btn_assignments is not None:
+            self._btn_assignments.set_text(
+                "Ukryj przypisania" if program.view_options.show_assignments else "Pokaż przypisania"
+            )
+
     def handle_key(self, program, key):
         if key == pygame.K_l:
             program.link_stairs_mode = not program.link_stairs_mode
             program.simulation.grid_world.pending_stair_endpoint = None
             program.simulation.grid_world.stair_link_error = None
+        elif key == pygame.K_h:
+            self._toggle_assignments(program)
         elif key == pygame.K_s and pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_META):
             _save_project(program)
+
+    def status_lines(self, context):
+        lines = super().status_lines(context)
+        if context.view_options.show_assignments:
+            lines.append("Szare: bez przypisania")
+        return lines
 
     def handle_mouse(self, program, event):
         if not program.link_stairs_mode:

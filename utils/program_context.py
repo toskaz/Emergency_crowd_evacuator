@@ -27,6 +27,7 @@ class ViewOptions:
     show_clusters: bool = True
     show_cluster_connections: bool = True
     show_drone_routes: bool = True
+    show_assignments: bool = False
 
 
 @dataclass

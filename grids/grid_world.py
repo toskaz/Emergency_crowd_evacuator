@@ -2,6 +2,7 @@ from collections import deque
 import logging
 
 from controls.action import Action
+from controls.drone_assignment import calculate_drone_assignments
 from graph_approach.navigation_graphx import NavigationGraphx
 from grids.cluster import ClusterType, StairCluster
 from grids.floor import Floor
@@ -31,6 +32,7 @@ class Grid_World:
         self.stair_link_error = None
         self.changed_floor_ids = set()
         self.navigation_graph = None
+        self.drone_ids = {}
         if self.floors:
             self.rebuild_map_data()
 
@@ -76,6 +78,7 @@ class Grid_World:
         self.stair_link_error = None
         self.changed_floor_ids = set()
         self.navigation_graph = None
+        self.drone_ids = {}
 
         for floor_data in data["floors"]:
             floor_id = floor_data["floor_id"]
@@ -177,6 +180,7 @@ class Grid_World:
                 self.pending_stair_endpoint = pending_stair_endpoint
         self.navigation_graph = NavigationGraphx(self.floors)
         self.build_distance_maps()
+        self.build_drone_assignments()
         self.changed_floor_ids.difference_update(floors_to_rebuild)
 
     def _snapshot_stair_clusters(self, floor_ids):
@@ -454,6 +458,7 @@ class Grid_World:
     def rebuild_navigation(self):
         self.navigation_graph = NavigationGraphx(self.floors)
         self.build_distance_maps()
+        self.build_drone_assignments()
 
     def route_to_closest_exit(self, start_node):
         exit_nodes = [
@@ -496,6 +501,20 @@ class Grid_World:
                     drone.grid_y,
                 )
         return routes
+
+    def build_drone_assignments(self):
+        drone_positions = [
+            (floor_id, x, y)
+            for floor_id, floor in self.floors.items()
+            for y in range(floor.map_grid.height)
+            for x in range(floor.map_grid.width)
+            if floor.map_grid.get(x, y) == CellType.DRONE
+        ]
+        self.drone_ids, assignment_grids = calculate_drone_assignments(
+            self, drone_positions
+        )
+        for floor_id, floor in self.floors.items():
+            floor.drone_assignment_grid = assignment_grids[floor_id]
 
     def build_distance_maps(self):
         distances = {}

@@ -33,3 +33,6 @@ class Floor:
         self.cluster_grid = ClusterGrid(self.map_grid)
         logger.debug("Clusters generated for floor %d", self.id + 1)
         self.distance_map = None
+        self.drone_assignment_grid = Grid(
+            self.map_grid.width, self.map_grid.height, None
+        )

@@ -9,6 +9,7 @@ from graphics.renderer import (
     draw_cluster_edges,
     draw_temporary_walls,
     draw_stair_highlights,
+    draw_assignment_groups,
 )
 
 
@@ -81,6 +82,10 @@ class Window:
                 world.floors,
                 context.drone_routes,
                 world.active_floor_id,
+            )
+        if options.show_assignments:
+            draw_assignment_groups(
+                self.screen, context.simulation, world.active_floor_id
             )
 
     def _draw_ui(self, context, key_bindings, selected_tool=None):

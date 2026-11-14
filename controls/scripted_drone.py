@@ -32,8 +32,20 @@ class ScriptedDroneController:
         return step_towards_exit(world, drone)
 
     def should_wait(self, simulation, drone):
-        group = [evacuee for evacuee in simulation.evacuees if evacuee.floor_id == drone.floor_id]
-        following = [evacuee for evacuee in find_leaders(simulation) if evacuee.floor_id == drone.floor_id]
+        if drone.drone_id is None:
+            return False
+        group = [
+            evacuee for evacuee in simulation.evacuees
+            if evacuee.assigned_drone_id == drone.drone_id
+        ]
+        leaders = find_leaders(simulation)
+        following = []
+        for evacuee in group:
+            leader = leaders.get(evacuee)
+            while leader in leaders:
+                leader = leaders[leader]
+            if leader is drone:
+                following.append(evacuee)
         return len(following) < len(group) / 2
 
     def stairs_are_shorter(self, world, drone):
