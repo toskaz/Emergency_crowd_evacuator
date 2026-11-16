@@ -1,3 +1,4 @@
+from pathlib import Path
 from dataclasses import dataclass
 import logging
 
@@ -17,8 +18,12 @@ import utils.config as config
 
 logger = logging.getLogger(__name__)
 
-MENU_WINDOW_SIZE = (500, 350)
+THEME_PATH = Path(__file__).resolve().parent.parent / "assets" / "ui" / "theme.json"
+MENU_WINDOW_SIZE = (1280, 800)
 CALIBRATION_WINDOW_SIZE = (1024, 768)
+MAIN_WINDOW_SIZE = (1280, 800)
+SIDEBAR_WIDTH = 280
+TOP_BAR_HEIGHT = 88
 
 
 @dataclass
@@ -43,7 +48,8 @@ class ProgramContext:
 
         self.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
         pygame.display.set_caption("Emergency Crowd Evacuator")
-        self.ui_manager = pygame_gui.UIManager(MENU_WINDOW_SIZE)
+        theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
+        self.ui_manager = pygame_gui.UIManager(MENU_WINDOW_SIZE, theme_path=theme_arg)
 
         self.simulation = None
         self.window = None
@@ -65,23 +71,24 @@ class ProgramContext:
     def _center_camera(self, map_grid, screen_width, screen_height):
         map_pixel_width = map_grid.width * config.drawing_size
         map_pixel_height = map_grid.height * config.drawing_size
-        
-        config.camera_offset_x = (screen_width - 250 - map_pixel_width) // 2
-        config.camera_offset_y = (screen_height - map_pixel_height) // 2
+
+        canvas_width = screen_width - SIDEBAR_WIDTH
+        canvas_height = screen_height - TOP_BAR_HEIGHT
+
+        config.camera_offset_x = (canvas_width - map_pixel_width) // 2
+        config.camera_offset_y = TOP_BAR_HEIGHT + max(0, (canvas_height - map_pixel_height) // 2)
 
     def _calculate_screen_size(self, map_grid):
-            display_info = pygame.display.Info()
-            max_w, max_h = display_info.current_w - 50, display_info.current_h - 100
-            desired_w = map_grid.width * drawing_size + 250 
-            desired_h = max(600, map_grid.height * drawing_size) 
+        display_info = pygame.display.Info()
+        max_w, max_h = display_info.current_w - 50, display_info.current_h - 100
+        desired_w = map_grid.width * drawing_size + SIDEBAR_WIDTH
+        desired_h = max(MAIN_WINDOW_SIZE[1], map_grid.height * drawing_size + TOP_BAR_HEIGHT)
 
-            #current_w, current_h = self.screen.get_size() if self.screen else (desired_w, desired_h)
-            min_w, min_h = CALIBRATION_WINDOW_SIZE
-        
-            target_w = max(min_w, min(desired_w, max_w))
-            target_h = max(min_h, min(desired_h, max_h))
-        
-            return target_w, target_h
+        min_w, min_h = MAIN_WINDOW_SIZE
+        target_w = max(min_w, min(desired_w, max_w))
+        target_h = max(min_h, min(desired_h, max_h))
+
+        return target_w, target_h
 
     def _load_controllers(self):
         self.drone_controller = DQNDroneController(training=False)
@@ -100,9 +107,10 @@ class ProgramContext:
         self.simulation.grid_world.add_floor_from_map(map_grid)
 
         screen_width, screen_height = self._calculate_screen_size(map_grid)
-    
+
         self.screen = pygame.display.set_mode((screen_width, screen_height))
-        self.ui_manager = pygame_gui.UIManager((screen_width, screen_height))
+        theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
+        self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
 
         self.window = Window(map_grid)
         self._center_camera(map_grid, screen_width, screen_height)
@@ -118,7 +126,8 @@ class ProgramContext:
         map_grid = self.simulation.grid_world.map_grid
         screen_width, screen_height = self._calculate_screen_size(map_grid)
         self.screen = pygame.display.set_mode((screen_width, screen_height))
-        self.ui_manager = pygame_gui.UIManager((screen_width, screen_height))
+        theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
+        self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
 
         self.window = Window(map_grid)
         self._center_camera(map_grid, screen_width, screen_height)
@@ -137,6 +146,7 @@ class ProgramContext:
             self.screen = pygame.display.set_mode((screen_width, screen_height))
             if self.ui_manager is not None:
                 self.ui_manager.set_window_resolution((screen_width, screen_height))
+        self._center_camera(map_grid, screen_width, screen_height)
         if self.window is not None:
             self.window.screen = self.screen
 

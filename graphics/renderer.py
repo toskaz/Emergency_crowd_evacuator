@@ -41,7 +41,7 @@ def draw_map(screen, grid, show_grid):
             value = grid.get(x, y)
 
             pos_x, pos_y = grid_to_pixel(x, y)
-            color = CELL_COLORS[value]
+            color = CELL_COLORS.get(value, Color.EMPTY.value)
 
             # Draw the cell
             pygame.draw.rect(
@@ -118,44 +118,57 @@ def draw_key_bindings(screen, font, key_bindings):
     if not key_bindings:
         return
 
-    padding = 10
-    title = font.render("Controls", True, Color.WALL.value)
-    title_rect = title.get_rect(topleft=(padding, padding))
-    screen.blit(title, title_rect)
+    padding_x = 16
+    line_h = 18
+    total_h = len(key_bindings) * line_h + 8
+    start_y = screen.get_height() - total_h - 12
 
-    top = title_rect.bottom + 5
+    badge_surface = pygame.Surface((260, total_h), pygame.SRCALPHA)
+    badge_surface.fill((25, 25, 25, 180))
+    pygame.draw.rect(badge_surface, (55, 55, 55, 180), badge_surface.get_rect(), 1, border_radius=6)
+    screen.blit(badge_surface, (padding_x, start_y))
+
+    cur_y = start_y + 4
     for line in key_bindings:
-        text = font.render(line, True, Color.WALL.value)
-        text_rect = text.get_rect(topleft=(padding, top))
-        screen.blit(text, text_rect)
-        top = text_rect.bottom + 3
+        text = font.render(line, True, (180, 180, 180))
+        screen.blit(text, (padding_x + 8, cur_y))
+        cur_y += line_h
 
 
 def draw_ui(screen, font, selected_tool=None, status_lines=(), key_bindings=(),
             key_font=None):
-    tool_names = {
-        Tool.WALL: "WALL",
-        Tool.EVACUEE: "EVACUEE",
-        Tool.EXIT: "EXIT",
-        Tool.DRONE: "DRONE",
-        Tool.STAIRS: "STAIRS",
-    }
-
-    padding = 10
-    top = padding
-    if selected_tool is not None:
-        tool_name = tool_names[selected_tool]
-        tool_color = TOOL_COLORS[selected_tool]
-        text = font.render(f"Tool: {tool_name}", True, tool_color)
-        text_rect = text.get_rect(top=padding, right=screen.get_width() - padding)
-        screen.blit(text, text_rect)
-        top = text_rect.bottom + 4
-
-    for line in status_lines:
-        text = font.render(line, True, Color.WALL.value)
-        text_rect = text.get_rect(top=top, right=screen.get_width() - padding)
-        screen.blit(text, text_rect)
-        top = text_rect.bottom + 4
+    alert_lines = [
+        line for line in status_lines
+        if line.startswith(" ") or line.startswith("★") or line.startswith("Error:") or line.startswith("Notice:")
+    ]
+    if alert_lines:
+        screen_w = screen.get_width()
+        canvas_center_x = (screen_w - 280) // 2
+        banner_y = 96
+        for line in alert_lines:
+            display_text = line.strip()
+            if not display_text:
+                continue
+            if display_text.startswith("Notice:"):
+                color = (16, 185, 129)
+            elif display_text.startswith("Error:") or "Error" in display_text:
+                color = (245, 158, 11)
+            else:
+                color = (59, 130, 246)
+            text = (key_font or font).render(display_text, True, (240, 240, 240))
+            pad_x, pad_y = 12, 6
+            pill_rect = pygame.Rect(
+                canvas_center_x - text.get_width() // 2 - pad_x,
+                banner_y,
+                text.get_width() + pad_x * 2,
+                text.get_height() + pad_y * 2
+            )
+            pill_surf = pygame.Surface((pill_rect.width, pill_rect.height), pygame.SRCALPHA)
+            pill_surf.fill((30, 30, 30, 220))
+            pygame.draw.rect(pill_surf, color, pill_surf.get_rect(), 1, border_radius=6)
+            screen.blit(pill_surf, pill_rect.topleft)
+            screen.blit(text, (pill_rect.x + pad_x, pill_rect.y + pad_y))
+            banner_y += pill_rect.height + 6
 
     draw_key_bindings(screen, key_font or font, key_bindings)
 
@@ -211,7 +224,7 @@ def draw_cluster_edges(screen, cluster_grid):
 def draw_clusters(screen, overlay_grid, alpha=110, font=None):
     cells = overlay_grid.grid
 
-    overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA) #need for proper transparency
+    overlay = pygame.Surface(screen.get_size(), pygame.SRCALPHA)
 
     for y in range(cells.height):
         for x in range(cells.width):
@@ -230,7 +243,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
                 else cluster_color(x, y)
             )
 
-            pygame.draw.rect(overlay,(*color, alpha),(px, py, config.drawing_size, config.drawing_size))
+            pygame.draw.rect(overlay, (*color, alpha), (px, py, config.drawing_size, config.drawing_size))
 
     screen.blit(overlay, (0, 0))
 
@@ -250,7 +263,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
 
 def draw_stair_highlights(screen, world, font=None, link_mode=False):
     if font is None:
-        font = pygame.font.Font(None, 18)
+        font = pygame.font.Font(None, 16)
 
     active_floor = world.active_floor
     active_floor_id = world.active_floor_id
@@ -272,13 +285,34 @@ def draw_stair_highlights(screen, world, font=None, link_mode=False):
         box = pygame.Rect(rect_x - 2, rect_y - 2, rect_w + 4, rect_h + 4)
 
         if is_pending:
-            pygame.draw.rect(screen, (255, 230, 50), box, 3)
-            badge = font.render("WYBRANE", True, (255, 230, 50))
-            screen.blit(badge, (box.centerx - badge.get_width() // 2, max(2, box.top - 14)))
-        elif link_mode:
-            pygame.draw.rect(screen, (80, 200, 255), box, 2)
+            box_color = (255, 230, 50)
+            box_width = 3
+            badge_text = f"C{cluster_id}: SELECTED"
+        elif cluster.linked_to is not None:
+            box_color = (16, 185, 129)
+            box_width = 2
+            t_floor, t_cid = cluster.linked_to
+            badge_text = f"C{cluster_id} -> F{t_floor + 1}:C{t_cid}"
+        else:
+            box_color = (80, 200, 255) if link_mode else (239, 68, 68)
+            box_width = 2
+            badge_text = f"C{cluster_id}: UNLINKED"
 
-        if cluster.linked_to is not None:
-            target_floor_num = cluster.linked_to[0] + 1
-            badge = font.render(f"P{target_floor_num}", True, (100, 255, 140))
-            screen.blit(badge, (box.centerx - badge.get_width() // 2, min(screen.get_height() - 14, box.bottom + 2)))
+        pygame.draw.rect(screen, box_color, box, box_width)
+
+        badge_surf = font.render(badge_text, True, box_color)
+        pad_x, pad_y = 6, 2
+        badge_w = badge_surf.get_width() + pad_x * 2
+        badge_h = badge_surf.get_height() + pad_y * 2
+
+        badge_x = box.centerx - badge_w // 2
+        badge_y = box.top - badge_h - 2
+        if badge_y < 90:
+            badge_y = box.bottom + 2
+
+        pill_rect = pygame.Rect(badge_x, badge_y, badge_w, badge_h)
+        pill_surf = pygame.Surface((badge_w, badge_h), pygame.SRCALPHA)
+        pill_surf.fill((20, 20, 20, 230))
+        pygame.draw.rect(pill_surf, (45, 45, 45), pill_surf.get_rect(), 1, border_radius=4)
+        screen.blit(pill_surf, pill_rect.topleft)
+        screen.blit(badge_surf, (badge_x + pad_x, badge_y + pad_y))
