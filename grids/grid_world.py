@@ -30,6 +30,7 @@ class Grid_World:
         self.active_floor_id = 0
         self.pending_stair_endpoint = None
         self.stair_link_error = None
+        self.stair_link_notice = None
         self.changed_floor_ids = set()
         self.navigation_graph = None
         self.drone_ids = {}
@@ -76,6 +77,7 @@ class Grid_World:
         self.floors = {}
         self.pending_stair_endpoint = None
         self.stair_link_error = None
+        self.stair_link_notice = None
         self.changed_floor_ids = set()
         self.navigation_graph = None
         self.drone_ids = {}

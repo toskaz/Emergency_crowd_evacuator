@@ -25,6 +25,7 @@ class Simulation:
         self.step_count = 0
         self.evacuated_count = 0
         self.started = False
+        self.prepared = False
 
         for floor in self.grid_world.floors.values():
             floor.evacuee_occupancy_grid = Grid(
