@@ -692,8 +692,7 @@ class OverviewState(ProgramState):
         program.simulation.grid_world.clear_temporary_walls()
         program.simulation.prepare()
         program.drone_routes = {}
-        program.drone_controller.pending_transitions.clear()
-        program.drone_controller.route_cursors.clear()
+        program.drone_controller.reset()
         program.rl_evacuee_controller.reset()
         program.plan_drone_routes()
         self._rebuild_ui(program)

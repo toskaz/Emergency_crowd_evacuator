@@ -6,14 +6,21 @@ from map.cell import CellType
 from utils.config import cluster_size
 
 
+MAX_DOOR_CLUSTER_SIZE = 4
+CLUSTERING_VERSION = 2
+CARDINAL_NEIGHBORS = ((1, 0), (-1, 0), (0, 1), (0, -1))
+
+
 class ClusterGrid:
-    def __init__(self, grid):
+    def __init__(self, grid, *, include_doors=True):
         self.grid = Grid(grid.width, grid.height)
         self.clusters = []
         self.adjacent_cluster_pairs = set()
-        self.build(grid)
+        self.build(grid, include_doors=include_doors)
 
-    def build(self, grid):
+    def build(self, grid, *, include_doors=True):
+        if include_doors:
+            self.add_door_sectors(grid)
         cluster_width = 2 * cluster_size + 1
 
         for block_y in range(0, grid.height, cluster_width):
@@ -40,6 +47,69 @@ class ClusterGrid:
         cluster_class = StairCluster if cluster_type is ClusterType.STAIRS else Cluster
         self.clusters.append(cluster_class(type=cluster_type))
         return cluster_id
+
+    def add_door_sectors(self, grid):
+        candidates = set()
+
+        def collect_spans(line):
+            opening = []
+            starts_at_wall = False
+            for x, y in line:
+                if grid.get(x, y) == CellType.WALL:
+                    if starts_at_wall and 0 < len(opening) <= MAX_DOOR_CLUSTER_SIZE:
+                        candidates.update(
+                            cell for cell in opening
+                            if grid.get(*cell) not in (CellType.EXIT, CellType.STAIRS)
+                        )
+                    opening = []
+                    starts_at_wall = True
+                else:
+                    opening.append((x, y))
+
+        for y in range(grid.height):
+            collect_spans((x, y) for x in range(grid.width))
+        for x in range(grid.width):
+            collect_spans((x, y) for y in range(grid.height))
+
+        seen = set()
+        for seed in sorted(candidates, key=lambda cell: (cell[1], cell[0])):
+            if seed in seen:
+                continue
+            component = {seed}
+            seen.add(seed)
+            pending = deque([seed])
+            while pending:
+                x, y = pending.popleft()
+                for dx, dy in CARDINAL_NEIGHBORS:
+                    neighbor = (x + dx, y + dy)
+                    if neighbor in candidates and neighbor not in seen:
+                        seen.add(neighbor)
+                        component.add(neighbor)
+                        pending.append(neighbor)
+
+            origin_x = min(x for x, _ in component)
+            origin_y = min(y for _, y in component)
+            for x, y in sorted(component, key=lambda cell: (cell[1], cell[0])):
+                if self.grid.get(x, y) is not None:
+                    continue
+                left = origin_x + (x - origin_x) // MAX_DOOR_CLUSTER_SIZE * MAX_DOOR_CLUSTER_SIZE
+                top = origin_y + (y - origin_y) // MAX_DOOR_CLUSTER_SIZE * MAX_DOOR_CLUSTER_SIZE
+                cluster_id = self._add_cluster(ClusterType.DOOR)
+                self.grid.set(x, y, cluster_id)
+                pending = deque([(x, y)])
+                while pending:
+                    cell_x, cell_y = pending.popleft()
+                    self.clusters[cluster_id].cells.append((cell_x, cell_y))
+                    for dx, dy in CARDINAL_NEIGHBORS:
+                        neighbor = (cell_x + dx, cell_y + dy)
+                        if (
+                            neighbor in component
+                            and left <= neighbor[0] < left + MAX_DOOR_CLUSTER_SIZE
+                            and top <= neighbor[1] < top + MAX_DOOR_CLUSTER_SIZE
+                            and self.grid.get(*neighbor) is None
+                        ):
+                            self.grid.set(*neighbor, cluster_id)
+                            pending.append(neighbor)
 
     def add_exit_sectors(self, grid):
         seen = set()

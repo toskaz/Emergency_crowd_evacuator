@@ -5,6 +5,7 @@ from controls.action import Action
 from controls.drone_assignment import calculate_drone_assignments
 from graph_approach.navigation_graphx import NavigationGraphx
 from grids.cluster import ClusterType, StairCluster
+from grids.cluster_grid import CLUSTERING_VERSION, ClusterGrid
 from grids.floor import Floor
 from grids.grid import Grid
 from grids.map_grid import Map_Grid
@@ -70,7 +71,7 @@ class Grid_World:
                 seen_links.add(pair)
                 stair_links.append([list(source_node), list(target_node)])
 
-        return {"floors": floors, "stair_links": stair_links}
+        return {"cluster_version": CLUSTERING_VERSION, "floors": floors, "stair_links": stair_links}
 
     def from_dict(self, data):
         self.floors = {}
@@ -95,9 +96,25 @@ class Grid_World:
 
         self.rebuild_map_data()
 
+        legacy_stair_nodes = None
+        if data.get("cluster_version", 1) < CLUSTERING_VERSION and data.get("stair_links"):
+            legacy_stair_nodes = {}
+            for floor_id, floor in self.floors.items():
+                legacy = ClusterGrid(floor.map_grid, include_doors=False)
+                for cluster_id, cluster in enumerate(legacy.clusters):
+                    if cluster.type is ClusterType.STAIRS:
+                        legacy_stair_nodes[(floor_id, cluster_id)] = self.stair_cluster_at(
+                            floor_id, *cluster.cells[0]
+                        )
+
         for source_list, target_list in data.get("stair_links", []):
             source_node = tuple(source_list)
             target_node = tuple(target_list)
+            if legacy_stair_nodes is not None:
+                source_node = legacy_stair_nodes.get(source_node)
+                target_node = legacy_stair_nodes.get(target_node)
+                if source_node is None or target_node is None:
+                    continue
             source_cluster = self._get_stair_cluster(source_node)
             target_cluster = self._get_stair_cluster(target_node)
             if source_cluster is not None and target_cluster is not None:
@@ -415,11 +432,14 @@ class Grid_World:
 
         target_floor_id = target_node[0]
         occupancy = self._occupancy_grid(target_floor_id, entity_type)
+        distances = self.floors[target_floor_id].distance_map
         reserved = set(reserved) #occupancy grid is not enough here
+
         candidates = sorted(
             target_cluster.cells,
             key=lambda cell: (
                 occupancy.get(*cell) is not None,
+                distances[cell[1]][cell[0]] if distances is not None else float("inf"),
                 abs(cell[0] - entity.grid_x) + abs(cell[1] - entity.grid_y),
                 cell[1],
                 cell[0],

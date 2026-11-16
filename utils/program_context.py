@@ -87,7 +87,7 @@ class ProgramContext:
         self.drone_controller = DQNDroneController(training=False)
         if not self.drone_controller.load(drone_model_path):
             logger.warning(
-                "Drone model not found at %s; run train_drones.py before simulation",
+                "Drone model missing or incompatible at %s; run train_drones.py before simulation",
                 drone_model_path,
             )
         self.rl_evacuee_controller = QLearningFollowController()

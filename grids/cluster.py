@@ -6,6 +6,7 @@ class ClusterType(Enum):
     NORMAL = auto()
     EXIT = auto()
     STAIRS = auto()
+    DOOR = auto()
 
 
 @dataclass

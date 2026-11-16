@@ -8,6 +8,7 @@ class Color(Enum):
     DRONE = (220, 20, 60)
     EXIT = (0, 255, 0)
     STAIRS = (255, 200, 0)
+    DOOR = (160, 90, 210)
     TEMPORARY_WALL = (220, 85, 55)
     GRID = (200, 200, 200)
     NAVIGATION = (240, 150, 40)

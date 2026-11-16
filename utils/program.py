@@ -14,7 +14,7 @@ class Program:
         context = self.context
 
         while context.running:
-            time_delta = clock.tick(60) / 1000.0
+            time_delta = clock.tick() / 1000.0
 
             handle_input(context)
 

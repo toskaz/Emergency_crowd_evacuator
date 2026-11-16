@@ -1,7 +1,8 @@
-pygame-ce
+pygame-ce>=2.5.7
 opencv-python
 numpy
 networkx
 torch
 gymnasium
 pygame_gui
+tqdm

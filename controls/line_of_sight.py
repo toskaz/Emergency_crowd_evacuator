@@ -2,21 +2,24 @@ from map.cell import CellType
 from utils.config import evacuee_vision_radius
 
 
-def can_see(world, floor_id, from_x, from_y, to_x, to_y):
-    if not is_within_vision(from_x, from_y, to_x, to_y):
+def can_see(world, floor_id, from_x, from_y, to_x, to_y, radius=evacuee_vision_radius):
+    if not is_within_vision(from_x, from_y, to_x, to_y, radius=radius):
         return False
 
-    walls = world.floors[floor_id].wall_and_exit_grid
+    floor = world.floors[floor_id]
     for x, y in line_cells(from_x, from_y, to_x, to_y):
-        if walls.get(x, y) == CellType.WALL:
+        if (
+            floor.wall_and_exit_grid.get(x, y) == CellType.WALL
+            or floor.temporary_wall_grid.get(x, y)
+        ):
             return False
     return True
 
 
-def is_within_vision(from_x, from_y, to_x, to_y):
+def is_within_vision(from_x, from_y, to_x, to_y, radius=evacuee_vision_radius):
     dx = to_x - from_x
     dy = to_y - from_y
-    return dx * dx + dy * dy <= evacuee_vision_radius * evacuee_vision_radius
+    return dx * dx + dy * dy <= radius * radius
 
 
 def line_cells(from_x, from_y, to_x, to_y):

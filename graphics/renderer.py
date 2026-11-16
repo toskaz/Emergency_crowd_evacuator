@@ -225,6 +225,8 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
                 if overlay_grid.clusters[cluster_id].type is ClusterType.EXIT
                 else Color.STAIRS.value
                 if overlay_grid.clusters[cluster_id].type is ClusterType.STAIRS
+                else Color.DOOR.value
+                if overlay_grid.clusters[cluster_id].type is ClusterType.DOOR
                 else cluster_color(x, y)
             )
 

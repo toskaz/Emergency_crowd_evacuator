@@ -7,6 +7,7 @@ import numpy as np
 
 from controls.action import Action
 from controls.line_of_sight import can_see
+from entities.drone import Drone
 from grids.grid_world import ACTION_DIRECTIONS
 from map.cell import CellType
 
@@ -16,7 +17,7 @@ DIRECTION_COUNT = 8
 DISTANCE_BANDS = 3
 BLOCKED_PATTERNS = 16
 
-EXIT_REACH = 5
+EXIT_REACH = 10
 PATH_SEARCH_LIMIT = 80
 PANIC_CHANCE = 0.65
 
@@ -25,9 +26,11 @@ DISCOUNT = 0.9
 
 EXIT_REWARD = 5.0
 CLOSER_REWARD = 0.2
-STEP_REWARD = -0.01
+STEP_REWARD = -0.02
 BUMP_REWARD = -0.2
-LOST_SIGHT_REWARD = -1.0
+FAILED_MOVE_GRACE = 2
+IDLE_REWARD = -0.05
+HOLD_REWARD = 0.02
 
 
 class QLearningFollowController:
@@ -42,12 +45,14 @@ class QLearningFollowController:
         self.pending = {}
         self.path_cache = {}
         self.exit_cells = {}
+        self.failed_moves = {}
 
     def reset(self):
         self.last_seen.clear()
         self.pending.clear()
         self.path_cache.clear()
         self.exit_cells.clear()
+        self.failed_moves.clear()
 
     def save(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -61,6 +66,10 @@ class QLearningFollowController:
 
     def get_actions(self, simulation):
         leaders = find_leaders(simulation)
+        for evacuee, leader in leaders.items():
+            while leader in leaders:
+                leader = leaders[leader]
+            self.last_seen[evacuee] = (leader.floor_id, leader.grid_x, leader.grid_y)
         return [self.decide(simulation, evacuee, leaders.get(evacuee)) for evacuee in simulation.evacuees]
 
     def decide(self, simulation, evacuee, leader):
@@ -71,6 +80,13 @@ class QLearningFollowController:
             return self.follow_last_seen(world, evacuee)
 
         self.remember_drone_position(evacuee, leader)
+        landing = world.stair_cluster_at(evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
+        if (
+            landing is not None
+            and landing == world.stair_cluster_at(leader.floor_id, leader.grid_x, leader.grid_y)
+            and world.stair_arrival(evacuee, "evacuee") is not None
+        ):
+            return Action.STAY
         return self.follow(world, evacuee, leader)
 
     def remember_drone_position(self, evacuee, leader):
@@ -81,15 +97,25 @@ class QLearningFollowController:
 
     def follow(self, world, evacuee, leader):
         state = observe(world, evacuee, leader)
-        action = self.choose_action(state)
-        self.pending[evacuee] = (state, action, leader, evacuee.grid_x, evacuee.grid_y)
+        action = self.choose_action(state, movement_options(world, evacuee))
+        if self.learning:
+            target = (leader.floor_id, leader.grid_x, leader.grid_y)
+            position = (evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
+            old_distance = manhattan(evacuee, leader)
+            can_approach = any(
+                abs(leader.grid_x - evacuee.grid_x - ACTION_DIRECTIONS[move][0])
+                + abs(leader.grid_y - evacuee.grid_y - ACTION_DIRECTIONS[move][1]) < old_distance
+                for move in legal_moves(state) if move != Action.STAY
+            )
+            self.pending[evacuee] = (state, action, target, position, can_approach)
         return action
 
-    def choose_action(self, state):
+    def choose_action(self, state, candidates=MOVES):
         if random.random() < self.epsilon:
-            return random.choice(MOVES)
+            return random.choice(candidates)
         values = self.q_table[state]
-        best_moves = [move for move in MOVES if values[int(move)] == values.max()]
+        best_value = max(values[int(move)] for move in candidates)
+        best_moves = [move for move in candidates if values[int(move)] == best_value]
         return random.choice(best_moves)
 
     def follow_last_seen(self, world, evacuee):
@@ -102,9 +128,11 @@ class QLearningFollowController:
             return panic(world, evacuee)
 
         _, target_x, target_y = target
-        if (evacuee.grid_x, evacuee.grid_y) == (target_x, target_y):
-            if world.floors[evacuee.floor_id].map_grid.get(target_x, target_y) == CellType.STAIRS:
+        landing = world.stair_cluster_at(evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
+        if landing is not None and landing == world.stair_cluster_at(target[0], target_x, target_y):
+            if world.stair_arrival(evacuee, "evacuee") is not None:
                 return Action.USE_STAIRS
+        if (evacuee.grid_x, evacuee.grid_y) == (target_x, target_y):
             self.last_seen.pop(evacuee)
             return panic(world, evacuee)
 
@@ -128,7 +156,7 @@ class QLearningFollowController:
         target = (evacuee.floor_id, target_x, target_y)
         if target not in self.path_cache:
             self.path_cache[target] = distances_from(world, *target)
-        return step_down(self.path_cache[target], evacuee)
+        return step_down(self.path_cache[target], evacuee, movement_options(world, evacuee))
 
     def learn(self, simulation):
         if not self.learning:
@@ -138,33 +166,63 @@ class QLearningFollowController:
         still_inside = set(simulation.evacuees)
         leaders = find_leaders(simulation)
         total_reward = 0.0
+        for evacuee in list(self.failed_moves):
+            if evacuee not in self.pending:
+                self.failed_moves.pop(evacuee)
 
-        for evacuee, (state, action, old_leader, old_x, old_y) in self.pending.items():
+        for evacuee, (state, action, target, position, can_approach) in self.pending.items():
             if evacuee not in still_inside:
+                self.failed_moves.pop(evacuee, None)
                 reward, next_state = EXIT_REWARD, None
             else:
-                reward, next_state = self.reward_and_next_state(simulation, evacuee, leaders.get(evacuee), action, old_leader, old_x, old_y)
-            self.update(state, action, reward, next_state)
+                reward, next_state = self.reward_and_next_state(
+                    simulation, evacuee, leaders.get(evacuee), action, target, position, can_approach
+                )
+            next_moves = None if next_state is None else movement_options(simulation.grid_world, evacuee)
+            self.update(state, action, reward, next_state, next_moves)
             total_reward += reward
 
         self.pending.clear()
         return total_reward
 
-    def reward_and_next_state(self, simulation, evacuee, leader, action, old_leader, old_x, old_y):
+    def reward_and_next_state(self, simulation, evacuee, leader, action, target, position, can_approach):
         reward = STEP_REWARD
-        if action is not Action.STAY and (evacuee.grid_x, evacuee.grid_y) == (old_x, old_y):
-            reward += BUMP_REWARD
+        reward += self._failed_move_penalty(simulation, evacuee, action, position)
 
-        old_distance = abs(old_leader.grid_x - old_x) + abs(old_leader.grid_y - old_y)
-        if distance_band(old_distance) > 0:
-            reward += CLOSER_REWARD * (old_distance - manhattan(evacuee, old_leader))
+        _, target_x, target_y = target
+        old_distance = abs(target_x - position[1]) + abs(target_y - position[2])
+        new_distance = abs(target_x - evacuee.grid_x) + abs(target_y - evacuee.grid_y)
+        reward += CLOSER_REWARD * (max(0, old_distance - 2) - max(0, new_distance - 2))
+        if action == Action.STAY:
+            if new_distance <= 2:
+                reward += HOLD_REWARD
+            elif can_approach:
+                reward += IDLE_REWARD
 
         if leader is None:
-            return reward + LOST_SIGHT_REWARD, None
+            return reward, None
         return reward, observe(simulation.grid_world, evacuee, leader)
 
-    def update(self, state, action, reward, next_state):
-        future = 0.0 if next_state is None else self.q_table[next_state].max()
+    def _failed_move_penalty(self, simulation, evacuee, action, position):
+        current = (evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
+        if action == Action.STAY or current != position:
+            self.failed_moves.pop(evacuee, None)
+            return 0.0
+        previous = self.failed_moves.get(evacuee)
+        signature = (position, int(action))
+        count = (
+            previous[2] + 1
+            if previous is not None and previous[0] == signature
+            and previous[1] == simulation.step_count - 1 else 1
+        )
+        self.failed_moves[evacuee] = (signature, simulation.step_count, count)
+        return BUMP_REWARD if count > FAILED_MOVE_GRACE else 0.0
+
+    def update(self, state, action, reward, next_state, next_moves=MOVES):
+        future = 0.0 if next_state is None else max(
+            self.q_table[next_state][int(move)]
+            for move in next_moves
+        )
         target = reward + DISCOUNT * future
         current = self.q_table[state][int(action)]
         self.q_table[state][int(action)] = current + LEARNING_RATE * (target - current)
@@ -248,21 +306,31 @@ def distance_band(distance):
     return 2
 
 
-def blocked_pattern(world, evacuee):
+def blocked_pattern(world, evacuee, include_people=True):
     occupancy = world.floors[evacuee.floor_id].evacuee_occupancy_grid
     pattern = 0
     for bit, move in enumerate(MOVES[1:]):
         dx, dy = ACTION_DIRECTIONS[move]
         x = evacuee.grid_x + dx
         y = evacuee.grid_y + dy
-        if not world.can_move_to(x, y, evacuee.floor_id) or occupancy.get(x, y) is not None:
+        if not world.can_move_to(x, y, evacuee.floor_id) or (include_people and occupancy.get(x, y) is not None):
             pattern |= 1 << bit
     return pattern
 
 
+def legal_moves(state):
+    return [Action.STAY] + [
+        move for bit, move in enumerate(MOVES[1:]) if not state[2] & (1 << bit)
+    ]
+
+
+def movement_options(world, evacuee):
+    return legal_moves((0, 0, blocked_pattern(world, evacuee, include_people=False)))
+
+
 def panic(world, evacuee):
     if random.random() < PANIC_CHANCE:
-        return random.choice(MOVES)
+        return random.choice(movement_options(world, evacuee))
     return step_towards_exit(world, evacuee)
 
 
@@ -284,6 +352,14 @@ def step_towards_exit(world, entity):
     distances = world.floors[entity.floor_id].distance_map
     best_action = Action.STAY
     best_distance = distances[entity.grid_y][entity.grid_x]
+    entity_type = "drone" if isinstance(entity, Drone) else "evacuee"
+    arrival = world.stair_arrival(entity, entity_type)
+    if arrival is not None:
+        floor_id, x, y = arrival
+        distance = world.floors[floor_id].distance_map[y][x]
+        if distance < best_distance:
+            best_action = Action.USE_STAIRS
+            best_distance = distance
 
     for move in MOVES[1:]:
         dx, dy = ACTION_DIRECTIONS[move]
@@ -296,13 +372,15 @@ def step_towards_exit(world, entity):
     return best_action
 
 
-def step_down(distances, evacuee):
+def step_down(distances, evacuee, candidates=MOVES):
     best_action = Action.STAY
     best_distance = distances.get((evacuee.grid_x, evacuee.grid_y))
     if best_distance is None:
         return Action.STAY
 
-    for move in MOVES[1:]:
+    for move in candidates:
+        if move == Action.STAY:
+            continue
         dx, dy = ACTION_DIRECTIONS[move]
         distance = distances.get((evacuee.grid_x + dx, evacuee.grid_y + dy))
         if distance is not None and distance < best_distance:
