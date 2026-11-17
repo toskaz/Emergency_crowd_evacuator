@@ -28,7 +28,7 @@ TOP_BAR_HEIGHT = 88
 
 @dataclass
 class ViewOptions:
-    show_grid: bool = True
+    show_grid: bool = False
     show_clusters: bool = True
     show_cluster_connections: bool = True
     show_drone_routes: bool = True
