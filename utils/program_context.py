@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 THEME_PATH = Path(__file__).resolve().parent.parent / "assets" / "ui" / "theme.json"
 MENU_WINDOW_SIZE = (1280, 800)
-CALIBRATION_WINDOW_SIZE = (1024, 768)
+CALIBRATION_WINDOW_SIZE = (1280, 800)
 MAIN_WINDOW_SIZE = (1280, 800)
 SIDEBAR_WIDTH = 280
 TOP_BAR_HEIGHT = 88
