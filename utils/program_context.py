@@ -57,6 +57,7 @@ class ProgramContext:
         self.rl_evacuee_controller = None
         self.coordinator = None
         self.imported_image_path = None
+        self.calibrated_floors = []
         self.running = True
 
         self.drone_routes = {}

@@ -264,6 +264,8 @@ class MainMenuState(ProgramState):
                 [("Images", "*.jpg *.png *.jpeg")],
             )
             if path:
+                program.calibrated_floors = []
+                program.simulation = None
                 program.imported_image_path = path
                 program.transition_to(CalibrationState())
 
@@ -419,14 +421,20 @@ class FloorCalibrationData:
         self.disp_y = 0
         self.disp_w = 0
         self.disp_h = 0
+        self.is_added_to_simulation = False
 
 
 class CalibrationState(ProgramState):
     name = "calibration"
 
     def enter(self, program):
-        self.image_path = program.imported_image_path
-        if not self.image_path:
+        if not hasattr(program, 'calibrated_floors') or program.calibrated_floors is None:
+            program.calibrated_floors = []
+
+        new_path = program.imported_image_path
+        program.imported_image_path = None
+
+        if not program.calibrated_floors and not new_path:
             logger.warning("No image path provided for calibration; returning to main menu")
             program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
             if program.ui_manager is not None:
@@ -482,14 +490,30 @@ class CalibrationState(ProgramState):
         self._btn_zoom_out = None
         self._floor_tab_buttons = []
 
-        first_floor = FloorCalibrationData(
-            self.image_path,
-            block_size=25,
-            acceptance_threshold=float(acceptance_threshold),
-        )
-        self._init_floor_fit(first_floor)
-        self.floors = [first_floor]
-        self.active_floor_index = 0
+        self.floors = program.calibrated_floors
+
+        if new_path:
+            cur_bs = self.floors[0].block_size if (self.lock_grid_size and self.floors) else 25
+            cur_sens = self.floors[-1].acceptance_threshold if self.floors else 0.40
+            new_fl = FloorCalibrationData(
+                new_path,
+                block_size=cur_bs,
+                acceptance_threshold=cur_sens,
+            )
+            self._init_floor_fit(new_fl)
+            self.floors.append(new_fl)
+            self.active_floor_index = len(self.floors) - 1
+        elif not self.floors:
+            first_floor = FloorCalibrationData(
+                new_path,
+                block_size=25,
+                acceptance_threshold=0.40,
+            )
+            self._init_floor_fit(first_floor)
+            self.floors.append(first_floor)
+            self.active_floor_index = 0
+        else:
+            self.active_floor_index = min(getattr(self, 'active_floor_index', 0), len(self.floors) - 1)
 
         self._build_ui(program)
         self._recompute_detection()
@@ -882,33 +906,60 @@ class CalibrationState(ProgramState):
                 self.pan_start = event.pos
 
     def _finish_and_generate(self, program):
-        map_grids = []
-        for fl in self.floors:
-            gw, gh = fl.grid_dimensions
-            if gw > 0 and gh > 0 and fl.wall_cells:
-                grid = Map_Grid(gw, gh, CellType.EMPTY)
-                for cx, cy in fl.wall_cells:
-                    grid.add_wall(cx, cy)
-                if fl.detect_exits:
-                    for cx, cy in fl.exit_cells:
-                        grid.add_exit(cx, cy)
-            else:
-                grid = Map_Grid.from_image(
-                    fl.image_path,
-                    fl.block_size,
-                    acceptance_threshold=fl.acceptance_threshold,
-                )
-            map_grids.append(grid)
+        if not self.floors:
+            return
 
-        program.simulation = Simulation()
-        first_grid = map_grids[0]
-        program.initialize_world(first_grid)
+        if program.simulation is None:
+            program.simulation = Simulation()
+            first = True
+            for fl in self.floors:
+                gw, gh = fl.grid_dimensions
+                if gw > 0 and gh > 0 and fl.wall_cells:
+                    grid = Map_Grid(gw, gh, CellType.EMPTY)
+                    for cx, cy in fl.wall_cells:
+                        grid.add_wall(cx, cy)
+                    if fl.detect_exits:
+                        for cx, cy in fl.exit_cells:
+                            grid.add_exit(cx, cy)
+                else:
+                    grid = Map_Grid.from_image(
+                        fl.image_path,
+                        fl.block_size,
+                        acceptance_threshold=fl.acceptance_threshold,
+                    )
+                if first:
+                    program.initialize_world(grid)
+                    first = False
+                else:
+                    program.simulation.grid_world.add_floor_from_map(grid)
+                fl.is_added_to_simulation = True
 
-        for mg in map_grids[1:]:
-            program.simulation.grid_world.add_floor_from_map(mg)
+            program.simulation.grid_world.set_active_floor(0)
+            program.update_window_for_active_floor()
+        else:
+            for fl in self.floors:
+                if not getattr(fl, 'is_added_to_simulation', False):
+                    gw, gh = fl.grid_dimensions
+                    if gw > 0 and gh > 0 and fl.wall_cells:
+                        grid = Map_Grid(gw, gh, CellType.EMPTY)
+                        for cx, cy in fl.wall_cells:
+                            grid.add_wall(cx, cy)
+                        if fl.detect_exits:
+                            for cx, cy in fl.exit_cells:
+                                grid.add_exit(cx, cy)
+                    else:
+                        grid = Map_Grid.from_image(
+                            fl.image_path,
+                            fl.block_size,
+                            acceptance_threshold=fl.acceptance_threshold,
+                        )
+                    program.simulation.grid_world.add_floor_from_map(grid)
+                    fl.is_added_to_simulation = True
 
-        program.simulation.grid_world.set_active_floor(0)
-        program.update_window_for_active_floor()
+            new_floor_id = len(program.simulation.grid_world.floors) - 1
+            program.simulation.grid_world.set_active_floor(new_floor_id)
+            program.update_window_for_active_floor()
+
         program.transition_to(EditorState())
 
     def handle_ui_event(self, program, event):
@@ -921,11 +972,13 @@ class CalibrationState(ProgramState):
                 [("Images", "*.jpg *.png *.jpeg")],
             )
             if next_path:
-                cur_bs = self.active_floor.block_size if (self.lock_grid_size and self.active_floor) else 25
+                cur = self.active_floor
+                cur_bs = cur.block_size if (self.lock_grid_size and cur) else 25
+                cur_sens = cur.acceptance_threshold if cur else 0.40
                 new_floor = FloorCalibrationData(
                     next_path,
                     block_size=cur_bs,
-                    acceptance_threshold=float(acceptance_threshold),
+                    acceptance_threshold=cur_sens,
                 )
                 self._init_floor_fit(new_floor)
                 self.floors.append(new_floor)
@@ -1024,7 +1077,10 @@ class CalibrationState(ProgramState):
                     if self.active_floor_index != idx:
                         self.active_floor_index = idx
                         self._build_ui(program)
-                        self._recompute_detection()
+                        if self.active_floor and not self.active_floor.wall_cells:
+                            self._recompute_detection()
+                        else:
+                            self._update_overlay_surface()
                     break
 
     def handle_key_event(self, program, key):
