@@ -5,35 +5,82 @@ from grids.grid import Grid
 from map.cell import CellType
 
 
-def extract_map_image(image_path, block_size, exit_kernel_size=5, acceptance_threshold=0.40):
+def preprocess_floorplan_image(image_path):
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise FileNotFoundError(f"Could not load image: {image_path}")
 
-    _, thresholded_image = cv2.threshold(image, 120, 255, cv2.THRESH_BINARY)
-    image_height, image_width = thresholded_image.shape
-    grid_width = (image_width + block_size - 1) // block_size
-    grid_height = (image_height + block_size - 1) // block_size
+    _, thresholded = cv2.threshold(image, 120, 255, cv2.THRESH_BINARY)
+    black_mask = (thresholded == 0).astype(np.uint8)
+    integral = cv2.integral(black_mask)
+    h, w = thresholded.shape
+
+    return {
+        "image": image,
+        "thresholded": thresholded,
+        "black_mask": black_mask,
+        "integral": integral,
+        "width": w,
+        "height": h,
+    }
+
+
+def detect_grid_cells(
+    preprocessed,
+    block_size,
+    acceptance_threshold=0.40,
+    exit_kernel_size=5,
+    detect_exits=True,
+):
+    integral = preprocessed["integral"]
+    w = preprocessed["width"]
+    h = preprocessed["height"]
+
+    grid_width = (w + block_size - 1) // block_size
+    grid_height = (h + block_size - 1) // block_size
+
+    y0 = np.arange(0, h, block_size)
+    y1 = np.minimum(y0 + block_size, h)
+    x0 = np.arange(0, w, block_size)
+    x1 = np.minimum(x0 + block_size, w)
+
+    X0, Y0 = np.meshgrid(x0, y0)
+    X1, Y1 = np.meshgrid(x1, y1)
+
+    counts = integral[Y1, X1] - integral[Y0, X1] - integral[Y1, X0] + integral[Y0, X0]
+    areas = (Y1 - Y0) * (X1 - X0)
+
+    wall_bool = counts > (areas * acceptance_threshold)
+    wall_mask = (wall_bool * 255).astype(np.uint8)
+    wall_cells = {
+        (x, y)
+        for y in range(grid_height)
+        for x in range(grid_width)
+        if wall_bool[y, x]
+    }
+
+    exit_cells = set()
+    if detect_exits and len(wall_cells) > 0:
+        kernel_sz = exit_kernel_size if exit_kernel_size is not None else 5
+        closed_walls = _close_doors(wall_mask, kernel_sz)
+        outside_area = _find_outside_area(closed_walls)
+        exits = _find_external_openings(wall_mask, closed_walls, outside_area)
+        exit_cells = set(exits)
+
+    return wall_cells, exit_cells, grid_width, grid_height
+
+
+def extract_map_image(image_path, block_size, exit_kernel_size=5, acceptance_threshold=0.40):
+    preprocessed = preprocess_floorplan_image(image_path)
+    wall_cells, exit_cells, grid_width, grid_height = detect_grid_cells(
+        preprocessed, block_size, acceptance_threshold, exit_kernel_size, detect_exits=True
+    )
     grid = Grid(grid_width, grid_height, CellType.EMPTY)
-
-    _recognize_walls(grid, thresholded_image, block_size, acceptance_threshold)
-    _mark_exits_on_grid(grid, exit_kernel_size)
+    for x, y in wall_cells:
+        grid.set(x, y, CellType.WALL)
+    for x, y in exit_cells:
+        grid.set(x, y, CellType.EXIT)
     return grid
-
-
-def _recognize_walls(grid, thresholded_image, block_size, acceptance_threshold):
-    for y in range(grid.height):
-        for x in range(grid.width):
-            block = thresholded_image[
-                y * block_size : (y + 1) * block_size,
-                x * block_size : (x + 1) * block_size,
-            ]
-            area = block.shape[0] * block.shape[1]
-            white_pixels = cv2.countNonZero(block)
-            black_pixels = area - white_pixels
-
-            if black_pixels > area * acceptance_threshold:
-                grid.set(x, y, CellType.WALL)
 
 
 def _mark_exits_on_grid(grid, kernel_size):
