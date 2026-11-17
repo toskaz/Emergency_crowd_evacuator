@@ -29,7 +29,7 @@ def detect_grid_cells(
     preprocessed,
     block_size,
     acceptance_threshold=0.40,
-    exit_kernel_size=5,
+    exit_kernel_size=None,
     detect_exits=True,
 ):
     integral = preprocessed["integral"]
@@ -50,7 +50,10 @@ def detect_grid_cells(
     counts = integral[Y1, X1] - integral[Y0, X1] - integral[Y1, X0] + integral[Y0, X0]
     areas = (Y1 - Y0) * (X1 - X0)
 
-    wall_bool = counts > (areas * acceptance_threshold)
+    eff_thresh = min(0.55, (acceptance_threshold / 0.40) * (9.5 / block_size))
+    eff_thresh = max(0.10, eff_thresh)
+
+    wall_bool = counts > (areas * eff_thresh)
     wall_mask = (wall_bool * 255).astype(np.uint8)
     wall_cells = {
         (x, y)
@@ -61,7 +64,13 @@ def detect_grid_cells(
 
     exit_cells = set()
     if detect_exits and len(wall_cells) > 0:
-        kernel_sz = exit_kernel_size if exit_kernel_size is not None else 5
+        if exit_kernel_size is not None:
+            kernel_sz = exit_kernel_size
+        else:
+            kernel_sz = max(5, int(np.ceil(130.0 / block_size)) + 1)
+            if kernel_sz % 2 == 0:
+                kernel_sz += 1
+
         closed_walls = _close_doors(wall_mask, kernel_sz)
         outside_area = _find_outside_area(closed_walls)
         exits = _find_external_openings(wall_mask, closed_walls, outside_area)
@@ -70,7 +79,7 @@ def detect_grid_cells(
     return wall_cells, exit_cells, grid_width, grid_height
 
 
-def extract_map_image(image_path, block_size, exit_kernel_size=5, acceptance_threshold=0.40):
+def extract_map_image(image_path, block_size, exit_kernel_size=None, acceptance_threshold=0.40):
     preprocessed = preprocess_floorplan_image(image_path)
     wall_cells, exit_cells, grid_width, grid_height = detect_grid_cells(
         preprocessed, block_size, acceptance_threshold, exit_kernel_size, detect_exits=True
@@ -119,27 +128,34 @@ def _find_outside_area(closed_walls):
 
 def _find_external_openings(original_walls, closed_walls, outside_area):
     height, width = original_walls.shape
-    exits = []
+    inside_mask = ((~outside_area) & (original_walls == 0)).astype(np.uint8)
 
+    n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(inside_mask)
+    if n_labels > 1:
+        largest_comp_idx = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        real_interior = (labels == largest_comp_idx)
+    else:
+        real_interior = inside_mask.astype(bool)
+
+    exits = []
     for y in range(height):
         for x in range(width):
             was_empty = original_walls[y, x] == 0
             got_closed = closed_walls[y, x] == 255
-            if was_empty and got_closed and _touches_outside(
-                x, y, outside_area, width, height
-            ):
-                exits.append((x, y))
+            if was_empty and got_closed:
+                if _touches_region(x, y, outside_area, width, height) and _touches_region(x, y, real_interior, width, height):
+                    exits.append((x, y))
 
     return exits
 
 
-def _touches_outside(x, y, outside_area, width, height):
+def _touches_region(x, y, region, width, height):
     for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
         neighbor_x, neighbor_y = x + dx, y + dy
         if (
             0 <= neighbor_x < width
             and 0 <= neighbor_y < height
-            and outside_area[neighbor_y, neighbor_x]
+            and region[neighbor_y, neighbor_x]
         ):
             return True
     return False
