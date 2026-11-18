@@ -6,12 +6,12 @@ import pygame
 import pygame_gui
 
 from controls.action import Action
-from controls.drone_dqn import DQNDroneController
+from controls.drone_astar import AStarDroneController
 from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from simulation import Simulation
-from utils.config import drawing_size, drone_model_path, q_table_path
+from utils.config import drawing_size, q_table_path
 from utils.program_state import MainMenuState
 import utils.config as config
 
@@ -92,12 +92,7 @@ class ProgramContext:
         return target_w, target_h
 
     def _load_controllers(self):
-        self.drone_controller = DQNDroneController(training=False)
-        if not self.drone_controller.load(drone_model_path):
-            logger.warning(
-                "Drone model missing or incompatible at %s; run train_drones.py before simulation",
-                drone_model_path,
-            )
+        self.drone_controller = AStarDroneController()
         self.rl_evacuee_controller = QLearningFollowController()
         self.rl_evacuee_controller.load(q_table_path)
         self.coordinator = GlobalCoordinator(self.simulation.grid_world)
@@ -163,8 +158,7 @@ class ProgramContext:
         )
 
     def replan_drone_routes_after_hazard(self):
-        self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
+        self.drone_routes, _ = self.coordinator.on_environment_changed(
             self.simulation.drones
         )
-        for drone in replanned_drones:
-            self.drone_controller.route_cursors.pop(drone, None)
+        self.drone_controller.invalidate()

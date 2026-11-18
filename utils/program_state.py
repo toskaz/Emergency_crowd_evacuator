@@ -1840,8 +1840,6 @@ class SimulationRunningState(ProgramState):
         program.simulation.step(evacuee_actions, drone_actions)
         if options.action is Action.USE_STAIRS:
             options.action = Action.STAY
-        if options.autonomous_drones:
-            program.drone_controller.learn(program.simulation, program.drone_routes)
 
     def exit(self, program):
         if program.ui_manager is not None:
