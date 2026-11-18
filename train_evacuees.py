@@ -2,7 +2,7 @@ import argparse
 import random
 
 from controls.evacuee_rl import QLearningFollowController
-from controls.scripted_drone import ScriptedDroneController
+from controls.drone_astar import AStarDroneController
 from controls.action import Action
 from entities.drone import Drone
 from entities.evacuee import Evacuee
@@ -119,7 +119,7 @@ def train(seed=0, episodes=EPISODES, model_path=q_table_path, basic_episodes=BAS
     add_training_stairs(simulation.grid_world)
     image_world_data = simulation.grid_world.to_dict()
     evacuees = QLearningFollowController(learning=True)
-    drones = ScriptedDroneController()
+    drones = AStarDroneController()
     pretrain_following(evacuees, rng, episodes=basic_episodes)
     print(f"Completed {basic_episodes} basic following episodes across all eight directions.")
 
