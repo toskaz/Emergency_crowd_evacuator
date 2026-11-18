@@ -125,8 +125,19 @@ class GlobalCoordinator:
 
         G = self.world.navigation_graph.G
         for i in range(len(remaining_route) - 1):
-            if not G.has_edge(remaining_route[i], remaining_route[i + 1]):
+            u, v = remaining_route[i], remaining_route[i + 1]
+            if not G.has_edge(u, v):
                 return False
+            if G[u][v].get("weight", 1.0) >= 1000.0:
+                return False
+
+        for node in remaining_route:
+            floor_id, cluster_id = node
+            floor = self.world.floors.get(floor_id)
+            if floor and hasattr(floor, "temporary_wall_grid") and floor.temporary_wall_grid:
+                cluster = floor.cluster_grid.clusters[cluster_id]
+                if any(floor.temporary_wall_grid.get(x, y) for x, y in cluster.cells):
+                    return False
 
         return True
 
@@ -145,6 +156,24 @@ class GlobalCoordinator:
                     node_u,
                     node_v,
                 )
+            else:
+                floor_u, cid_u = node_u
+                floor_v, cid_v = node_v
+                has_hazard_u = False
+                has_hazard_v = False
+                fl_u = self.world.floors.get(floor_u)
+                fl_v = self.world.floors.get(floor_v)
+                if fl_u and hasattr(fl_u, "temporary_wall_grid") and fl_u.temporary_wall_grid:
+                    cl_u = fl_u.cluster_grid.clusters[cid_u]
+                    has_hazard_u = any(fl_u.temporary_wall_grid.get(x, y) for x, y in cl_u.cells)
+                if fl_v and hasattr(fl_v, "temporary_wall_grid") and fl_v.temporary_wall_grid:
+                    cl_v = fl_v.cluster_grid.clusters[cid_v]
+                    has_hazard_v = any(fl_v.temporary_wall_grid.get(x, y) for x, y in cl_v.cells)
+
+                if has_hazard_u or has_hazard_v:
+                    G[node_u][node_v]["weight"] = 1000.0
+                else:
+                    G[node_u][node_v]["weight"] = 1.0
 
     def is_cluster_transition_passable(self, node_u, node_v):
         floor_u, cluster_u_id = node_u
@@ -198,8 +227,6 @@ class GlobalCoordinator:
 
         return False
 
-    # TODO: jak zaimplementujemy flow rate, to tutaj bedziemy aktualizowac wagi krawedzi przed wyznaczeniem trasy
-    # predykcja w kroku np 50 itp
     def update_flow_weights(self):
         """
         Miejsce przygotowane pod przyszłą implementację Flow Rate (np. predykcja w kroku +50).

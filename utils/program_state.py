@@ -2,6 +2,9 @@ import platform
 import subprocess
 import json
 import logging
+import random
+import cv2
+import numpy as np
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog
@@ -111,6 +114,9 @@ class ProgramState:
     def handle_key(self, program, key):
         pass
 
+    def handle_raw_mouse(self, program, event):
+        pass
+
     def handle_mouse(self, program, event):
         pass
 
@@ -163,7 +169,7 @@ class ProgramState:
                 pending_floor = world.pending_stair_endpoint[0] + 1
                 lines.append(f"  Stairs on Floor {pending_floor} selected. Switch floor and click target stairs!")
             else:
-                lines.append("  Stair Link Mode: Click first stairs (L to exit, RMB to cancel)")
+                lines.append("  Stair Link Mode: Click first stairs")
         if world and world.stair_link_notice:
             lines.append(f"Notice: {world.stair_link_notice}")
         if world and world.stair_link_error:
@@ -205,6 +211,11 @@ class ProgramState:
 
 class MainMenuState(ProgramState):
     name = "main_menu"
+
+    def __init__(self):
+        self._import_button = None
+        self._blank_button = None
+        self._open_button = None
 
     def enter(self, program):
         program.simulation = None
@@ -400,13 +411,19 @@ class MainMenuState(ProgramState):
 
 
 class FloorCalibrationData:
-    def __init__(self, image_path, block_size=25, acceptance_threshold=0.40):
+    def __init__(self, image_path, block_size=25, acceptance_threshold=0.40, px_per_m=None):
         self.image_path = image_path
         self.raw_image = pygame.image.load(image_path).convert()
         self.img_w, self.img_h = self.raw_image.get_size()
         self.preprocessed = preprocess_floorplan_image(image_path)
         self.block_size = block_size
         self.acceptance_threshold = float(acceptance_threshold)
+        if px_per_m is not None and float(px_per_m) > 0:
+            self.px_per_m = float(px_per_m)
+        else:
+            self.px_per_m = 25.0 / 0.6
+        self.cell_size_m = self.block_size / self.px_per_m
+        self.update_cell_size()
         self.detect_exits = True
         self.zoom_level = 1.0
         self.pan_offset_x = 0
@@ -423,9 +440,46 @@ class FloorCalibrationData:
         self.disp_h = 0
         self.is_added_to_simulation = False
 
+    def update_cell_size(self):
+        if getattr(self, "px_per_m", 0) > 0:
+            self.cell_size_m = self.block_size / self.px_per_m
+        else:
+            self.cell_size_m = (self.block_size / 25.0) * 0.6
+
 
 class CalibrationState(ProgramState):
     name = "calibration"
+
+    def __init__(self):
+        self.is_panning = False
+        self.pan_start = (0, 0)
+        self.lock_grid_size = True
+        self.is_measuring = False
+        self.measure_p1 = None
+        self.measure_p2 = None
+        self.last_measured_dist_px = 0.0
+
+        self._slider_block_size = None
+        self._slider_sensitivity = None
+        self._btn_coarse = None
+        self._btn_standard = None
+        self._btn_fine = None
+        self._btn_measure_scale = None
+        self._btn_reset_measure = None
+        self._scale_input_window = None
+        self._scale_entry_meters = None
+        self._scale_btn_apply = None
+        self._scale_btn_cancel = None
+        self._btn_lock_grid = None
+        self._btn_toggle_exits = None
+        self._generate_button = None
+        self._btn_back = None
+        self._btn_load_project = None
+        self._btn_add_floor = None
+        self._btn_zoom_in = None
+        self._btn_zoom_out = None
+        self._floor_tab_buttons = []
+        self.floors = []
 
     def enter(self, program):
         if not hasattr(program, 'calibrated_floors') or program.calibrated_floors is None:
@@ -443,7 +497,7 @@ class CalibrationState(ProgramState):
             return
 
         self.screen_size = CALIBRATION_WINDOW_SIZE
-        program.screen = pygame.display.set_mode(self.screen_size)
+        program.screen = pygame.display.set_mode(self.screen_size, pygame.RESIZABLE)
         if program.ui_manager is not None:
             program.ui_manager.set_window_resolution(self.screen_size)
             program.ui_manager.clear_and_reset()
@@ -474,12 +528,22 @@ class CalibrationState(ProgramState):
         self.is_panning = False
         self.pan_start = (0, 0)
         self.lock_grid_size = True
+        self.is_measuring = False
+        self.measure_p1 = None
+        self.measure_p2 = None
+        self.last_measured_dist_px = 0.0
 
         self._slider_block_size = None
         self._slider_sensitivity = None
         self._btn_coarse = None
         self._btn_standard = None
         self._btn_fine = None
+        self._btn_measure_scale = None
+        self._btn_reset_measure = None
+        self._scale_input_window = None
+        self._scale_entry_meters = None
+        self._scale_btn_apply = None
+        self._scale_btn_cancel = None
         self._btn_lock_grid = None
         self._btn_toggle_exits = None
         self._generate_button = None
@@ -495,10 +559,12 @@ class CalibrationState(ProgramState):
         if new_path:
             cur_bs = self.floors[0].block_size if (self.lock_grid_size and self.floors) else 25
             cur_sens = self.floors[-1].acceptance_threshold if self.floors else 0.40
+            cur_px = self.floors[0].px_per_m if (self.lock_grid_size and self.floors) else None
             new_fl = FloorCalibrationData(
                 new_path,
                 block_size=cur_bs,
                 acceptance_threshold=cur_sens,
+                px_per_m=cur_px,
             )
             self._init_floor_fit(new_fl)
             self.floors.append(new_fl)
@@ -529,6 +595,23 @@ class CalibrationState(ProgramState):
         avail_w = self.canvas_rect.width - (2 * margin)
         avail_h = self.canvas_rect.height - (2 * margin)
         fl.fit_scale = min(avail_w / fl.img_w, avail_h / fl.img_h)
+
+    def handle_resize(self, program, new_size):
+        self.screen_size = new_size
+        self.canvas_rect = pygame.Rect(
+            0,
+            self.header_height,
+            self.screen_size[0] - self.sidebar_width,
+            self.screen_size[1] - self.header_height,
+        )
+        self.sidebar_rect = pygame.Rect(
+            self.canvas_rect.right,
+            self.top_nav_height,
+            self.sidebar_width,
+            self.screen_size[1] - self.top_nav_height,
+        )
+        self._build_ui(program)
+        self._update_overlay_surface()
 
     def _build_ui(self, program):
         if program.ui_manager is None:
@@ -622,8 +705,21 @@ class CalibrationState(ProgramState):
             object_id="#btn_preset_active" if bs == 15 else "#btn_preset_inactive",
         )
 
+        self._btn_measure_scale = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(sb_x + 16, 184, 168, 28),
+            text="Calibrate Scale (Tape)",
+            manager=mgr,
+            object_id="#tool_btn_selected" if self.is_measuring else "#tool_btn",
+        )
+        self._btn_reset_measure = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(sb_x + 188, 184, 76, 28),
+            text="Reset",
+            manager=mgr,
+            object_id="#menu_button",
+        )
+
         self._slider_sensitivity = pygame_gui.elements.UIHorizontalSlider(
-            relative_rect=pygame.Rect(sb_x + 16, 336, 248, 18),
+            relative_rect=pygame.Rect(sb_x + 16, 364, 248, 18),
             start_value=sens,
             value_range=(15, 65),
             manager=mgr,
@@ -631,14 +727,14 @@ class CalibrationState(ProgramState):
         )
 
         self._btn_toggle_exits = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, 420, 248, 34),
+            relative_rect=pygame.Rect(sb_x + 16, 432, 248, 34),
             text="Detect Exits: ON" if dex else "Detect Exits: OFF",
             manager=mgr,
             object_id="#tool_btn_selected" if dex else "#tool_btn",
         )
 
         self._btn_lock_grid = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, 462, 248, 34),
+            relative_rect=pygame.Rect(sb_x + 16, 472, 248, 34),
             text="Lock Grid Size on All Floors: ON" if self.lock_grid_size else "Lock Grid Size on All Floors: OFF",
             manager=mgr,
             object_id="#tool_btn_selected" if self.lock_grid_size else "#tool_btn",
@@ -687,7 +783,7 @@ class CalibrationState(ProgramState):
         cell_h = cur.block_size * scale
         gw, gh = cur.grid_dimensions
 
-        wall_color = (37, 61, 88, 175)
+        wall_color = (59, 130, 246, 185)
         for cx, cy in cur.wall_cells:
             rx = int(cx * cell_w)
             ry = int(cy * cell_h)
@@ -722,9 +818,11 @@ class CalibrationState(ProgramState):
             new_val = int(self._slider_block_size.get_current_value())
             if new_val != cur.block_size:
                 cur.block_size = new_val
+                cur.update_cell_size()
                 if self.lock_grid_size:
                     for fl in self.floors:
                         fl.block_size = new_val
+                        fl.update_cell_size()
                 self._recompute_detection()
 
         if self._slider_sensitivity is not None:
@@ -761,13 +859,51 @@ class CalibrationState(ProgramState):
             screen.blit(cur.display_image, (cur.disp_x, cur.disp_y))
         if cur and cur.overlay_surface is not None:
             screen.blit(cur.overlay_surface, (cur.disp_x, cur.disp_y))
+
+        if self.is_measuring and self.measure_p1 is not None:
+            p2 = self.measure_p2 if self.measure_p2 is not None else pygame.mouse.get_pos()
+            pygame.draw.line(screen, (245, 158, 11), self.measure_p1, p2, 2)
+            pygame.draw.circle(screen, (245, 158, 11), self.measure_p1, 5)
+            pygame.draw.circle(screen, (0, 0, 0), self.measure_p1, 2)
+            pygame.draw.circle(screen, (245, 158, 11), p2, 5)
+            pygame.draw.circle(screen, (0, 0, 0), p2, 2)
+
+            dist_scr = ((p2[0] - self.measure_p1[0]) ** 2 + (p2[1] - self.measure_p1[1]) ** 2) ** 0.5
+            cur_scale = (cur.fit_scale * cur.zoom_level) if cur else 1.0
+            dist_raw_val = dist_scr / cur_scale if cur_scale > 0 else dist_scr
+            mid_x = (self.measure_p1[0] + p2[0]) // 2
+            mid_y = (self.measure_p1[1] + p2[1]) // 2 - 14
+            b_txt = self.tiny_font.render(f"{dist_raw_val:.1f} px", True, (255, 255, 255))
+            b_rect = pygame.Rect(mid_x - b_txt.get_width() // 2 - 4, mid_y - 2, b_txt.get_width() + 8, b_txt.get_height() + 4)
+            pygame.draw.rect(screen, (20, 20, 20), b_rect, border_radius=3)
+            pygame.draw.rect(screen, (245, 158, 11), b_rect, 1, border_radius=3)
+            screen.blit(b_txt, (b_rect.x + 4, b_rect.y + 2))
+
         screen.set_clip(None)
+
+        if self.is_measuring:
+            banner_w = 420
+            banner_h = 32
+            bx = self.canvas_rect.x + (self.canvas_rect.width - banner_w) // 2
+            by = 96
+            banner_surf = pygame.Surface((banner_w, banner_h), pygame.SRCALPHA)
+            banner_surf.fill((20, 20, 20, 230))
+            pygame.draw.rect(banner_surf, (245, 158, 11), banner_surf.get_rect(), 1, border_radius=6)
+            screen.blit(banner_surf, (bx, by))
+            if self.measure_p1 is None:
+                guide_txt = "Click 1st point (e.g. door edge) on map (ESC to cancel)"
+            elif self.measure_p2 is None:
+                guide_txt = "Click 2nd point to finish distance measurement"
+            else:
+                guide_txt = "Enter real-world length in meters"
+            t_surf = self.small_font.render(guide_txt, True, (255, 230, 150))
+            screen.blit(t_surf, (bx + (banner_w - t_surf.get_width()) // 2, by + 8))
 
         legend_hdr = self.tiny_font.render("DETECTION PREVIEW", True, Color.TEXT_MUTED.value)
         screen.blit(legend_hdr, (24, 102))
 
-        pygame.draw.rect(screen, (37, 61, 88), (24, 122, 12, 12), border_radius=2)
-        pygame.draw.rect(screen, (60, 90, 130), (24, 122, 12, 12), 1, border_radius=2)
+        pygame.draw.rect(screen, (59, 130, 246), (24, 122, 12, 12), border_radius=2)
+        pygame.draw.rect(screen, (147, 197, 253), (24, 122, 12, 12), 1, border_radius=2)
         wall_txt = self.small_font.render("Detected walls", True, Color.TEXT_PRIMARY.value)
         screen.blit(wall_txt, (42, 120))
 
@@ -775,16 +911,6 @@ class CalibrationState(ProgramState):
         pygame.draw.rect(screen, (80, 240, 130), (24, 142, 12, 12), 1, border_radius=2)
         exit_txt = self.small_font.render("Detected exits", True, Color.TEXT_PRIMARY.value)
         screen.blit(exit_txt, (42, 140))
-
-        tip_pill_rect = pygame.Rect(20, screen_h - 56, 490, 42)
-        pygame.draw.rect(screen, Color.CARD_BG.value, tip_pill_rect, border_radius=7)
-        pygame.draw.rect(screen, Color.CARD_BORDER.value, tip_pill_rect, 1, border_radius=7)
-        tip_txt = self.tiny_font.render(
-            "Tip: Adjust block size until a standard doorway is 1-2 grid cells wide",
-            True,
-            Color.TEXT_MUTED.value,
-        )
-        screen.blit(tip_txt, (tip_pill_rect.x + 14, tip_pill_rect.y + 14))
 
         zoom_pill_rect = pygame.Rect(self.canvas_rect.right - 246, screen_h - 56, 226, 42)
         pygame.draw.rect(screen, Color.CARD_BG.value, zoom_pill_rect, border_radius=7)
@@ -847,7 +973,7 @@ class CalibrationState(ProgramState):
         screen.blit(sub_l1, (sb_x + 20, 120))
         screen.blit(sub_r1, (sb_x + 264 - sub_r1.get_width(), 120))
 
-        card_rect = pygame.Rect(sb_x + 16, 188, 248, 82)
+        card_rect = pygame.Rect(sb_x + 16, 220, 248, 82)
         pygame.draw.rect(screen, Color.CARD_BG.value, card_rect, border_radius=7)
         pygame.draw.rect(screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
 
@@ -859,32 +985,35 @@ class CalibrationState(ProgramState):
 
         pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, card_rect.y + 37), (card_rect.right - 14, card_rect.y + 37), 1)
 
-        real_cm = round(60.0 * (cur_bs / 25.0))
+        cell_m = cur.cell_size_m if cur else 0.6
         lbl_scale = self.font.render("Real Scale:", True, (170, 170, 170))
-        val_scale = self.font.render(f"1 cell = {real_cm} cm", True, (240, 240, 240))
+        if cell_m >= 1.0:
+            val_scale = self.font.render(f"1 cell = {cell_m:.2f} m", True, (240, 240, 240))
+        else:
+            val_scale = self.font.render(f"1 cell = {round(cell_m * 100)} cm", True, (240, 240, 240))
         screen.blit(lbl_scale, (card_rect.x + 14, card_rect.y + 48))
         screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, card_rect.y + 48))
 
-        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, 282), (sb_x + 264, 282), 1)
+        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, 310), (sb_x + 264, 310), 1)
 
         hdr2 = self.tiny_font.render("DETECTION SETTINGS", True, Color.TEXT_MUTED.value)
-        screen.blit(hdr2, (sb_x + 20, 294))
+        screen.blit(hdr2, (sb_x + 20, 320))
 
         sens_pct = round((cur.acceptance_threshold if cur else 0.40) * 100)
         lbl_sens = self.font.render("Wall Sensitivity:", True, (170, 170, 170))
         val_sens = self.font.render(f"{sens_pct}%", True, (240, 240, 240))
-        screen.blit(lbl_sens, (sb_x + 20, 314))
-        screen.blit(val_sens, (sb_x + 264 - val_sens.get_width(), 314))
+        screen.blit(lbl_sens, (sb_x + 20, 342))
+        screen.blit(val_sens, (sb_x + 264 - val_sens.get_width(), 342))
 
         sub_l2 = self.font.render("Low (15%)", True, (170, 170, 170))
         sub_r2 = self.font.render("High (65%)", True, (170, 170, 170))
-        screen.blit(sub_l2, (sb_x + 20, 356))
-        screen.blit(sub_r2, (sb_x + 264 - sub_r2.get_width(), 356))
+        screen.blit(sub_l2, (sb_x + 20, 384))
+        screen.blit(sub_r2, (sb_x + 264 - sub_r2.get_width(), 384))
 
-        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, 390), (sb_x + 264, 390), 1)
+        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, 412), (sb_x + 264, 412), 1)
 
         hdr3 = self.tiny_font.render("CONTROLS", True, Color.TEXT_MUTED.value)
-        screen.blit(hdr3, (sb_x + 20, 400))
+        screen.blit(hdr3, (sb_x + 20, 420))
 
         pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, screen_h - 72), (sb_x + 264, screen_h - 72), 1)
 
@@ -898,7 +1027,86 @@ class CalibrationState(ProgramState):
                 if cur.zoom_level != old_zoom:
                     self._update_overlay_surface()
 
+    def _show_scale_input_dialog(self, program, dist_raw_px):
+        if self._scale_input_window is not None:
+            self._scale_input_window.kill()
+        self.last_measured_dist_px = dist_raw_px
+        win_w, win_h = 280, 140
+        win_x = self.canvas_rect.centerx - win_w // 2
+        win_y = self.canvas_rect.centery - win_h // 2
+        self._scale_input_window = pygame_gui.elements.UIWindow(
+            pygame.Rect(win_x, win_y, win_w, win_h),
+            manager=program.ui_manager,
+            window_display_title="Calibrate Scale",
+        )
+        self._scale_entry_meters = pygame_gui.elements.UITextEntryLine(
+            pygame.Rect(14, 18, 140, 32),
+            manager=program.ui_manager,
+            container=self._scale_input_window,
+            initial_text="1.0",
+        )
+        self._scale_btn_apply = pygame_gui.elements.UIButton(
+            pygame.Rect(160, 18, 96, 32),
+            text="Apply",
+            manager=program.ui_manager,
+            container=self._scale_input_window,
+            object_id="#tool_btn_selected",
+        )
+        self._scale_btn_cancel = pygame_gui.elements.UIButton(
+            pygame.Rect(14, 58, 242, 30),
+            text="Cancel / Reset",
+            manager=program.ui_manager,
+            container=self._scale_input_window,
+            object_id="#menu_button",
+        )
+
+    def handle_raw_mouse(self, program, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if self._slider_block_size is not None and self._slider_block_size.rect.collidepoint(event.pos):
+                r = self._slider_block_size.rect
+                ratio = max(0.0, min(1.0, (event.pos[0] - r.x) / max(1, r.width)))
+                val = int(round(10 + ratio * 40))
+                self._slider_block_size.set_current_value(val)
+                cur = self.active_floor
+                if cur is not None and cur.block_size != val:
+                    cur.block_size = val
+                    cur.update_cell_size()
+                    if self.lock_grid_size:
+                        for fl in self.floors:
+                            fl.block_size = val
+                            fl.update_cell_size()
+                    self._recompute_detection()
+            elif self._slider_sensitivity is not None and self._slider_sensitivity.rect.collidepoint(event.pos):
+                r = self._slider_sensitivity.rect
+                ratio = max(0.0, min(1.0, (event.pos[0] - r.x) / max(1, r.width)))
+                val = int(round(15 + ratio * 50))
+                self._slider_sensitivity.set_current_value(val)
+                cur = self.active_floor
+                if cur is not None:
+                    cur.acceptance_threshold = val / 100.0
+                    self._recompute_detection()
+
     def handle_mouse(self, program, event):
+        if self.is_measuring and event.button == 1:
+            mx, my = event.pos
+            if self.canvas_rect.collidepoint(mx, my):
+                cur = self.active_floor
+                if cur and cur.raw_image:
+                    if self.measure_p1 is None:
+                        self.measure_p1 = (mx, my)
+                    elif self.measure_p2 is None:
+                        self.measure_p2 = (mx, my)
+                        scale = cur.fit_scale * cur.zoom_level
+                        dx = (self.measure_p2[0] - self.measure_p1[0]) / scale
+                        dy = (self.measure_p2[1] - self.measure_p1[1]) / scale
+                        dist_raw = (dx * dx + dy * dy) ** 0.5
+                        if dist_raw >= 3:
+                            self._show_scale_input_dialog(program, dist_raw)
+                        else:
+                            self.measure_p1 = None
+                            self.measure_p2 = None
+                return
+
         if event.button in (1, 2, 3):
             mx, my = event.pos
             if self.canvas_rect.collidepoint(mx, my) and my < self.screen_size[1] - 60:
@@ -927,6 +1135,8 @@ class CalibrationState(ProgramState):
                         fl.block_size,
                         acceptance_threshold=fl.acceptance_threshold,
                     )
+                fl.update_cell_size()
+                grid.cell_size_m = fl.cell_size_m
                 if first:
                     program.initialize_world(grid)
                     first = False
@@ -953,6 +1163,8 @@ class CalibrationState(ProgramState):
                             fl.block_size,
                             acceptance_threshold=fl.acceptance_threshold,
                         )
+                    fl.update_cell_size()
+                    grid.cell_size_m = fl.cell_size_m
                     program.simulation.grid_world.add_floor_from_map(grid)
                     fl.is_added_to_simulation = True
 
@@ -975,10 +1187,12 @@ class CalibrationState(ProgramState):
                 cur = self.active_floor
                 cur_bs = cur.block_size if (self.lock_grid_size and cur) else 25
                 cur_sens = cur.acceptance_threshold if cur else 0.40
+                cur_px = cur.px_per_m if (self.lock_grid_size and cur) else None
                 new_floor = FloorCalibrationData(
                     next_path,
                     block_size=cur_bs,
                     acceptance_threshold=cur_sens,
+                    px_per_m=cur_px,
                 )
                 self._init_floor_fit(new_floor)
                 self.floors.append(new_floor)
@@ -1013,6 +1227,8 @@ class CalibrationState(ProgramState):
                 if cur:
                     for fl in self.floors:
                         fl.block_size = cur.block_size
+                        fl.px_per_m = cur.px_per_m
+                        fl.update_cell_size()
                     self._recompute_detection()
             self._build_ui(program)
 
@@ -1020,9 +1236,11 @@ class CalibrationState(ProgramState):
             cur = self.active_floor
             if cur:
                 cur.block_size = 35
+                cur.update_cell_size()
                 if self.lock_grid_size:
                     for fl in self.floors:
                         fl.block_size = 35
+                        fl.update_cell_size()
                 if self._slider_block_size:
                     self._slider_block_size.set_current_value(35)
                 self._recompute_detection()
@@ -1032,9 +1250,11 @@ class CalibrationState(ProgramState):
             cur = self.active_floor
             if cur:
                 cur.block_size = 25
+                cur.update_cell_size()
                 if self.lock_grid_size:
                     for fl in self.floors:
                         fl.block_size = 25
+                        fl.update_cell_size()
                 if self._slider_block_size:
                     self._slider_block_size.set_current_value(25)
                 self._recompute_detection()
@@ -1044,13 +1264,64 @@ class CalibrationState(ProgramState):
             cur = self.active_floor
             if cur:
                 cur.block_size = 15
+                cur.update_cell_size()
                 if self.lock_grid_size:
                     for fl in self.floors:
                         fl.block_size = 15
+                        fl.update_cell_size()
                 if self._slider_block_size:
                     self._slider_block_size.set_current_value(15)
                 self._recompute_detection()
                 self._build_ui(program)
+
+        elif event.ui_element == self._btn_measure_scale:
+            self.is_measuring = not self.is_measuring
+            self.measure_p1 = None
+            self.measure_p2 = None
+            if self._scale_input_window:
+                self._scale_input_window.kill()
+                self._scale_input_window = None
+            self._build_ui(program)
+
+        elif event.ui_element in (self._btn_reset_measure, self._scale_btn_cancel):
+            self.is_measuring = False
+            self.measure_p1 = None
+            self.measure_p2 = None
+            if self._scale_input_window:
+                self._scale_input_window.kill()
+                self._scale_input_window = None
+            self._build_ui(program)
+
+        elif event.ui_element == self._scale_btn_apply:
+            cur = self.active_floor
+            if cur and hasattr(self, "last_measured_dist_px") and self._scale_entry_meters:
+                try:
+                    val_str = self._scale_entry_meters.get_text().strip().replace(",", ".")
+                    meters = float(val_str)
+                    if meters > 0:
+                        px_per_m = self.last_measured_dist_px / meters
+                        new_bs = int(round(0.6 * px_per_m))
+                        new_bs = max(10, min(50, new_bs))
+                        cur.px_per_m = px_per_m
+                        cur.block_size = new_bs
+                        cur.update_cell_size()
+                        if self.lock_grid_size:
+                            for fl in self.floors:
+                                fl.px_per_m = px_per_m
+                                fl.block_size = new_bs
+                                fl.update_cell_size()
+                        if self._slider_block_size:
+                            self._slider_block_size.set_current_value(new_bs)
+                        self._recompute_detection()
+                except Exception as e:
+                    logger.warning("Invalid scale meters input: %s", e)
+            self.is_measuring = False
+            self.measure_p1 = None
+            self.measure_p2 = None
+            if self._scale_input_window:
+                self._scale_input_window.kill()
+                self._scale_input_window = None
+            self._build_ui(program)
 
         elif event.ui_element == self._btn_toggle_exits:
             cur = self.active_floor
@@ -1085,22 +1356,53 @@ class CalibrationState(ProgramState):
 
     def handle_key_event(self, program, key):
         if key == pygame.K_ESCAPE:
+            if self.is_measuring or self._scale_input_window:
+                self.is_measuring = False
+                self.measure_p1 = None
+                self.measure_p2 = None
+                if self._scale_input_window:
+                    self._scale_input_window.kill()
+                    self._scale_input_window = None
+                self._build_ui(program)
+                return
             program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
             if program.ui_manager is not None:
                 program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
             program.transition_to(MainMenuState())
         elif key == pygame.K_LEFT:
             cur = self.active_floor
-            if self._slider_block_size is not None and cur:
-                self._slider_block_size.set_current_value(max(10, cur.block_size - 1))
+            if cur:
+                cur.pan_offset_x += 30
+                self._update_overlay_surface()
         elif key == pygame.K_RIGHT:
             cur = self.active_floor
-            if self._slider_block_size is not None and cur:
-                self._slider_block_size.set_current_value(min(50, cur.block_size + 1))
+            if cur:
+                cur.pan_offset_x -= 30
+                self._update_overlay_surface()
+        elif key == pygame.K_UP:
+            cur = self.active_floor
+            if cur:
+                cur.pan_offset_y += 30
+                self._update_overlay_surface()
+        elif key == pygame.K_DOWN:
+            cur = self.active_floor
+            if cur:
+                cur.pan_offset_y -= 30
+                self._update_overlay_surface()
         elif key == pygame.K_RETURN:
+            if self._scale_input_window and hasattr(self, "_scale_btn_apply"):
+                event_dummy = pygame.event.Event(pygame_gui.UI_BUTTON_PRESSED, ui_element=self._scale_btn_apply)
+                self.handle_ui_event(program, event_dummy)
+                return
             self._finish_and_generate(program)
 
     def exit(self, program):
+        if getattr(self, "_scale_input_window", None) is not None:
+            self._scale_input_window.kill()
+            self._scale_input_window = None
+        self.is_measuring = False
+        self.measure_p1 = None
+        self.measure_p2 = None
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
         self._slider_block_size = None
@@ -1108,6 +1410,11 @@ class CalibrationState(ProgramState):
         self._btn_coarse = None
         self._btn_standard = None
         self._btn_fine = None
+        self._btn_measure_scale = None
+        self._btn_reset_measure = None
+        self._scale_btn_apply = None
+        self._scale_btn_cancel = None
+        self._scale_entry_meters = None
         self._btn_lock_grid = None
         self._btn_toggle_exits = None
         self._generate_button = None
@@ -1133,12 +1440,7 @@ class EditorState(ProgramState):
     name = "editor"
     can_pan = True
     floor_switch_enabled = True
-    key_bindings = (
-        "Arrow keys: Pan canvas",
-        "G: Toggle grid",
-        "+ / -: Zoom",
-        "LMB: Place, RMB: Erase",
-    )
+    key_bindings = ()
 
     def __init__(self):
         self.selected_tool = Tool.WALL
@@ -1154,12 +1456,16 @@ class EditorState(ProgramState):
         self._btn_exit = None
         self._btn_drone = None
         self._btn_stairs = None
+        self._btn_random_crowd = None
+        self._crowd_window = None
+        self._crowd_entry = None
+        self._crowd_btn_apply = None
+        self._crowd_btn_cancel = None
         self._save_project_btn = None
-        self._btn_start_sim = None
-        self._btn_pause = None
-        self._btn_reset = None
+        self._btn_toggle_grid = None
 
     def enter(self, program):
+        program.view_options.show_heatmap = False
         program.view_options.show_clusters = False
         program.view_options.show_cluster_connections = False
         program.view_options.show_drone_routes = False
@@ -1238,72 +1544,194 @@ class EditorState(ProgramState):
 
         tool_x = sidebar_x + 16
         tool_w = 248
-        tool_h = 40
-        y = 248
+        tool_h = 34
+        y = 166
 
         self._btn_wall = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
-            "Wall" if self.selected_tool == Tool.WALL else "Wall",
+            "Wall",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.WALL else "#tool_btn",
         )
-        y += 44
+        y += 38
         self._btn_evacuee = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
-            "Evacuee" if self.selected_tool == Tool.EVACUEE else "Evacuee",
+            "Evacuee",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.EVACUEE else "#tool_btn",
         )
-        y += 44
+        y += 38
         self._btn_exit = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
-            "Exit" if self.selected_tool == Tool.EXIT else "Exit",
+            "Exit",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.EXIT else "#tool_btn",
         )
-        y += 44
+        y += 38
         self._btn_drone = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
-            "Agent" if self.selected_tool == Tool.DRONE else "Agent",
+            "Agent",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.DRONE else "#tool_btn",
         )
-        y += 44
+        y += 38
         self._btn_stairs = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
-            "Stairs" if self.selected_tool == Tool.STAIRS else "Stairs",
+            "Stairs",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.STAIRS else "#tool_btn",
         )
-        y += 48
+
+        btn_w_half = 122
+        gap = 4
+        action_y = 402
+        self._btn_random_crowd = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, action_y, btn_w_half, 34),
+            "Random Crowd",
+            manager=program.ui_manager,
+            object_id="#btn_secondary",
+        )
         self._save_project_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, y, tool_w, 34),
+            pygame.Rect(tool_x + btn_w_half + gap, action_y, btn_w_half, 34),
             "Save Project",
             manager=program.ui_manager,
             object_id="#btn_secondary",
         )
-
-        playback_y = 564
-        self._btn_start_sim = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y, tool_w, 38),
-            "Start Simulation",
+        self._btn_toggle_grid = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, action_y + 40, tool_w, 32),
+            "Grid",
             manager=program.ui_manager,
+            object_id="#tool_btn_selected" if program.view_options.show_grid else "#tool_btn",
+        )
+
+    def _show_crowd_dialog(self, program):
+        if self._crowd_window is not None:
+            self._crowd_window.kill()
+            self._crowd_window = None
+
+        screen_w, screen_h = program.screen.get_size()
+        win_w = 300
+        win_h = 160
+        win_x = max(20, (screen_w - SIDEBAR_WIDTH - win_w) // 2)
+        win_y = max(20, (screen_h - win_h) // 2)
+
+        self._crowd_window = pygame_gui.elements.UIWindow(
+            rect=pygame.Rect(win_x, win_y, win_w, win_h),
+            manager=program.ui_manager,
+            window_display_title="Generate Random Crowd",
+            object_id="#scale_window",
+        )
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(16, 12, win_w - 32, 24),
+            text="Evacuees per floor:",
+            manager=program.ui_manager,
+            container=self._crowd_window,
+        )
+        self._crowd_entry = pygame_gui.elements.UITextEntryLine(
+            relative_rect=pygame.Rect(16, 40, win_w - 32, 30),
+            manager=program.ui_manager,
+            container=self._crowd_window,
+            initial_text="30",
+        )
+        btn_w = (win_w - 40) // 2
+        self._crowd_btn_apply = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(16, 80, btn_w, 32),
+            text="Generate",
+            manager=program.ui_manager,
+            container=self._crowd_window,
             object_id="#btn_start_sim",
         )
-        self._btn_pause = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y + 44, 120, 34),
-            "Pause",
+        self._crowd_btn_cancel = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(24 + btn_w, 80, btn_w, 32),
+            text="Cancel",
             manager=program.ui_manager,
-            object_id="#btn_playback",
-        )
-        self._btn_reset = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x + 128, playback_y + 44, 120, 34),
-            "Reset",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
+            container=self._crowd_window,
+            object_id="#menu_button",
         )
 
+    def _apply_random_crowd(self, program):
+        if self._crowd_entry is None or not program.simulation:
+            return
+        try:
+            count = int(self._crowd_entry.get_text().strip())
+        except (ValueError, TypeError):
+            count = 30
+        count = max(1, min(1000, count))
+
+        world = program.simulation.grid_world
+        world.build_distance_maps()
+
+        for f_id, floor in world.floors.items():
+            for y in range(floor.map_grid.height):
+                for x in range(floor.map_grid.width):
+                    if floor.map_grid.get(x, y) == CellType.EVACUEE:
+                        floor.map_grid.set(x, y, CellType.EMPTY)
+
+            w, h = floor.map_grid.width, floor.map_grid.height
+            wall_barrier = np.zeros((h, w), dtype=np.uint8)
+            wall_pts = []
+            for y in range(h):
+                for x in range(w):
+                    if floor.map_grid.get(x, y) in (CellType.WALL, CellType.EXIT):
+                        wall_barrier[y, x] = 255
+                        wall_pts.append((x, y))
+
+            inside_mask = None
+            if wall_pts:
+                min_x = min(pt[0] for pt in wall_pts)
+                max_x = max(pt[0] for pt in wall_pts)
+                min_y = min(pt[1] for pt in wall_pts)
+                max_y = max(pt[1] for pt in wall_pts)
+
+                for k_size in (5, 7, 9):
+                    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_size, k_size))
+                    closed = cv2.morphologyEx(wall_barrier, cv2.MORPH_CLOSE, kernel)
+                    pad = cv2.copyMakeBorder(closed, 4, 4, 4, 4, cv2.BORDER_CONSTANT, value=0)
+                    cv2.floodFill(pad, None, (0, 0), 128, flags=8)
+                    cv2.floodFill(pad, None, (pad.shape[1] - 1, 0), 128, flags=8)
+                    cv2.floodFill(pad, None, (0, pad.shape[0] - 1), 128, flags=8)
+                    cv2.floodFill(pad, None, (pad.shape[1] - 1, pad.shape[0] - 1), 128, flags=8)
+                    outside = (pad[4:-4, 4:-4] == 128)
+                    raw_inside = (~outside) & (wall_barrier == 0)
+                    clean_inside = cv2.erode(raw_inside.astype(np.uint8), cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+                    if np.sum(clean_inside) > 0:
+                        inside_mask = (clean_inside > 0)
+                        break
+
+            dist_map = getattr(floor, "distance_map", None)
+            candidates = []
+            for y in range(h):
+                for x in range(w):
+                    if floor.map_grid.get(x, y) != CellType.EMPTY:
+                        continue
+                    if hasattr(floor, "temporary_wall_grid") and floor.temporary_wall_grid and floor.temporary_wall_grid.get(x, y):
+                        continue
+                    if getattr(floor, "drone_occupancy_grid", None) and floor.drone_occupancy_grid.get(x, y) is not None:
+                        continue
+                    if wall_pts and not (min_x < x < max_x and min_y < y < max_y):
+                        continue
+                    is_inside = bool(inside_mask[y, x]) if inside_mask is not None else False
+                    has_route = (dist_map is not None) and (dist_map[y][x] < float("inf"))
+                    if is_inside and has_route:
+                        candidates.append((x, y))
+
+            if candidates:
+                chosen = random.sample(candidates, min(count, len(candidates)))
+                for cx, cy in chosen:
+                    floor.map_grid.set(cx, cy, CellType.EVACUEE)
+
+        if self._crowd_window:
+            self._crowd_window.kill()
+            self._crowd_window = None
+
+        program.simulation.prepare()
+        program.plan_drone_routes()
+        self._rebuild_ui(program)
+
     def exit(self, program):
+        if getattr(self, "_crowd_window", None) is not None:
+            self._crowd_window.kill()
+            self._crowd_window = None
         program.simulation.grid_world.rebuild_changed_map_data()
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
@@ -1325,8 +1753,6 @@ class EditorState(ProgramState):
             program.simulation.prepare()
             program.plan_drone_routes()
             program.transition_to(SimulationPausedState())
-        elif event.ui_element == self._btn_start_sim:
-            program.transition_to(SimulationRunningState())
         elif event.ui_element == self._btn_wall:
             self.selected_tool = Tool.WALL
             self._rebuild_ui(program)
@@ -1342,9 +1768,17 @@ class EditorState(ProgramState):
         elif event.ui_element == self._btn_stairs:
             self.selected_tool = Tool.STAIRS
             self._rebuild_ui(program)
-        elif event.ui_element == self._btn_reset:
-            if program.simulation:
-                program.simulation.prepare()
+        elif event.ui_element == self._btn_random_crowd:
+            self._show_crowd_dialog(program)
+        elif event.ui_element == self._crowd_btn_apply or (event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED and event.ui_element == self._crowd_entry):
+            self._apply_random_crowd(program)
+        elif event.ui_element == self._crowd_btn_cancel:
+            if self._crowd_window:
+                self._crowd_window.kill()
+                self._crowd_window = None
+        elif event.ui_element == self._btn_toggle_grid:
+            program.view_options.show_grid = not program.view_options.show_grid
+            self._rebuild_ui(program)
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -1375,6 +1809,30 @@ class EditorState(ProgramState):
             self.selected_tool,
         )
 
+    def handle_mouse_motion(self, program, event):
+        buttons = event.buttons
+        if not buttons[0] and not buttons[2]:
+            return
+        screen_w, screen_h = program.screen.get_size()
+        if event.pos[0] >= screen_w - SIDEBAR_WIDTH or event.pos[1] < TOP_BAR_HEIGHT:
+            return
+        btn = 1 if buttons[0] else 3
+        handle_map_editor(
+            program.simulation,
+            event.pos,
+            btn,
+            self.selected_tool,
+        )
+
+    def status_lines(self, context):
+        lines = []
+        if context.simulation:
+            msg = getattr(context.simulation, "last_editor_error", None)
+            timer = getattr(context.simulation, "last_editor_error_timer", 0)
+            if msg and pygame.time.get_ticks() < timer:
+                lines.append(f"Error: {msg}")
+        return lines
+
     def render(self, program):
         program.window.draw_editor(program, self.selected_tool, self.key_bindings)
 
@@ -1384,15 +1842,7 @@ class OverviewState(ProgramState):
     render_options_enabled = True
     floor_switch_enabled = True
     can_pan = True
-    key_bindings = (
-        "Arrow keys: Pan canvas",
-        "L: Stair link mode",
-        "H: Toggle assignments",
-        "C: Clusters",
-        "B: Connections",
-        "V: Drone routes",
-        "G: Grid",
-    )
+    key_bindings = ()
 
     def __init__(self):
         self._floor_tabs = {}
@@ -1404,16 +1854,20 @@ class OverviewState(ProgramState):
         self._btn_add_floor = None
         self._btn_link_toggle = None
         self._save_project_btn = None
-        self._btn_start_sim = None
-        self._btn_reset = None
-        self._btn_pause = None
+        self._btn_toggle_clusters = None
+        self._btn_toggle_connections = None
+        self._btn_toggle_routes = None
+        self._btn_toggle_assignments = None
+        self._btn_toggle_grid = None
 
     def enter(self, program):
-        program.simulation.grid_world.clear_temporary_walls()
+        program.view_options.show_heatmap = False
         program.simulation.prepare()
         program.drone_routes = {}
-        program.drone_controller.reset()
-        program.rl_evacuee_controller.reset()
+        if program.drone_controller is not None:
+            program.drone_controller.reset()
+        if program.rl_evacuee_controller is not None:
+            program.rl_evacuee_controller.reset()
         program.plan_drone_routes()
         self._rebuild_ui(program)
 
@@ -1490,41 +1944,52 @@ class OverviewState(ProgramState):
 
         tool_x = sidebar_x + 16
         tool_w = 248
-        y = 248
 
         self._btn_link_toggle = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, y, tool_w, 40),
+            pygame.Rect(tool_x, 276, tool_w, 32),
             "Stair Link: Active" if program.link_stairs_mode else "Enable Stair Link",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if program.link_stairs_mode else "#tool_btn",
         )
 
-        y += 46
-        self._save_project_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, y, tool_w, 34),
-            "Save Project",
+        y = 352
+        opts = program.view_options
+        btn_w_half = 122
+        gap = 4
+
+        self._btn_toggle_clusters = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Clusters",
             manager=program.ui_manager,
-            object_id="#btn_secondary",
+            object_id="#tool_btn_selected" if opts.show_clusters else "#tool_btn",
+        )
+        self._btn_toggle_connections = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Links",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_cluster_connections else "#tool_btn",
         )
 
-        playback_y = 564
-        self._btn_start_sim = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y, tool_w, 38),
-            "Start Simulation",
+        y += 32
+        self._btn_toggle_routes = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Agent Routes",
             manager=program.ui_manager,
-            object_id="#btn_start_sim",
+            object_id="#tool_btn_selected" if opts.show_drone_routes else "#tool_btn",
         )
-        self._btn_pause = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y + 44, 120, 34),
-            "Pause",
+        self._btn_toggle_assignments = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Assign",
             manager=program.ui_manager,
-            object_id="#btn_playback",
+            object_id="#tool_btn_selected" if opts.show_assignments else "#tool_btn",
         )
-        self._btn_reset = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x + 128, playback_y + 44, 120, 34),
-            "Reset",
+
+        y += 32
+        self._btn_toggle_grid = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, tool_w, 28),
+            "Grid",
             manager=program.ui_manager,
-            object_id="#btn_playback",
+            object_id="#tool_btn_selected" if opts.show_grid else "#tool_btn",
         )
 
     def exit(self, program):
@@ -1552,11 +2017,21 @@ class OverviewState(ProgramState):
             program.simulation.prepare()
             program.plan_drone_routes()
             program.transition_to(SimulationPausedState())
-        elif event.ui_element == self._btn_start_sim:
-            program.transition_to(SimulationRunningState())
-        elif event.ui_element == self._btn_reset:
-            program.simulation.prepare()
-            program.plan_drone_routes()
+        elif event.ui_element == self._btn_toggle_clusters:
+            program.view_options.show_clusters = not program.view_options.show_clusters
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_connections:
+            program.view_options.show_cluster_connections = not program.view_options.show_cluster_connections
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_routes:
+            program.view_options.show_drone_routes = not program.view_options.show_drone_routes
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_assignments:
+            program.view_options.show_assignments = not program.view_options.show_assignments
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_grid:
+            program.view_options.show_grid = not program.view_options.show_grid
+            self._rebuild_ui(program)
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -1602,6 +2077,8 @@ class OverviewState(ProgramState):
             return
 
         grid_x, grid_y = pixel_to_grid(*event.pos)
+        if not world.map_grid.in_bounds(grid_x, grid_y):
+            return
         endpoint = world.stair_cluster_at(world.active_floor_id, grid_x, grid_y)
         if endpoint is None:
             world.stair_link_error = "Select a stair cluster"
@@ -1642,17 +2119,7 @@ class SimulationRunningState(ProgramState):
     can_pan = True
     render_options_enabled = True
     floor_switch_enabled = True
-
-    key_bindings = (
-        "P: Pause",
-        "X: Finish",
-        "WASD: Evacuees",
-        "T: Stairs",
-        "F: Autopilot",
-        "R: RL Follow",
-        "C/B/V: Overlays",
-        "G: Grid",
-    )
+    key_bindings = ()
 
     def __init__(self):
         self._floor_tabs = {}
@@ -1661,9 +2128,17 @@ class SimulationRunningState(ProgramState):
         self._nav_edit = None
         self._nav_link = None
         self._nav_sim = None
+        self._btn_add_floor = None
         self._btn_pause = None
         self._btn_reset = None
         self._btn_start_sim = None
+        self._btn_toggle_clusters = None
+        self._btn_toggle_connections = None
+        self._btn_toggle_routes = None
+        self._btn_toggle_assignments = None
+        self._btn_toggle_grid = None
+        self._btn_toggle_heatmap = None
+        self._btn_finish = None
 
     def enter(self, program):
         self._rebuild_ui(program)
@@ -1727,7 +2202,7 @@ class SimulationRunningState(ProgramState):
             )
             self._floor_tabs[f_id] = tab_btn
             tab_x += 106
-        
+
         self._btn_add_floor = pygame_gui.elements.UIButton(
             pygame.Rect(tab_x + 6, 54, 105, 28),
             "+ Add Floor",
@@ -1735,11 +2210,53 @@ class SimulationRunningState(ProgramState):
             object_id="#btn_add_floor",
         )
 
-
         tool_x = sidebar_x + 16
         tool_w = 248
-        playback_y = 564
+        btn_w_half = 122
+        gap = 4
+        opts = program.view_options
+        y = 246
 
+        self._btn_toggle_clusters = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Clusters",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_clusters else "#tool_btn",
+        )
+        self._btn_toggle_connections = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Links",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_cluster_connections else "#tool_btn",
+        )
+        y += 32
+        self._btn_toggle_routes = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Agent Routes",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_drone_routes else "#tool_btn",
+        )
+        self._btn_toggle_assignments = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Assign",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_assignments else "#tool_btn",
+        )
+        y += 32
+        self._btn_toggle_grid = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Grid",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_grid else "#tool_btn",
+        )
+        self._btn_toggle_heatmap = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Heatmap",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_heatmap else "#tool_btn",
+        )
+
+        playback_y = 384
         self._btn_start_sim = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, playback_y, tool_w, 38),
             "Start Simulation",
@@ -1758,17 +2275,24 @@ class SimulationRunningState(ProgramState):
             manager=program.ui_manager,
             object_id="#btn_playback",
         )
-
+        self._btn_finish = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, playback_y + 86, tool_w, 32),
+            "Finish (Results)",
+            manager=program.ui_manager,
+            object_id="#btn_secondary",
+        )
 
     def handle_ui_event(self, program, event):
         if event.ui_element == self._save_btn:
             _save_project(program)
         elif event.ui_element == self._btn_start_sim:
             if not program.simulation.started:
-                program.start_simulation()
+                program.simulation.start()
             else:
-               program.simulation.paused = False
-               self._rebuild_ui(program)
+                program.simulation.paused = False
+                self._rebuild_ui(program)
+        elif event.ui_element == self._btn_finish:
+            program.transition_to(ResultsState())
         elif event.ui_element == self._menu_btn:
             program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
             if program.ui_manager:
@@ -1780,13 +2304,35 @@ class SimulationRunningState(ProgramState):
             program.transition_to(OverviewState())
         elif event.ui_element == self._btn_pause:
             program.transition_to(SimulationPausedState())
+        elif event.ui_element == self._btn_toggle_clusters:
+            program.view_options.show_clusters = not program.view_options.show_clusters
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_connections:
+            program.view_options.show_cluster_connections = not program.view_options.show_cluster_connections
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_routes:
+            program.view_options.show_drone_routes = not program.view_options.show_drone_routes
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_assignments:
+            program.view_options.show_assignments = not program.view_options.show_assignments
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_grid:
+            program.view_options.show_grid = not program.view_options.show_grid
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_heatmap:
+            program.view_options.show_heatmap = not program.view_options.show_heatmap
+            self._rebuild_ui(program)
         elif event.ui_element == self._btn_reset:
-            program.simulation.prepare()
-            program.plan_drone_routes()
-            program.transition_to(OverviewState())
-        elif event.ui_element == self._btn_reset:
-            program.link_stairs_mode = False
-            program.transition_to(OverviewState())
+            if program.simulation:
+                program.simulation.grid_world.clear_temporary_walls()
+                program.simulation.prepare()
+                program.drone_routes = {}
+                if program.drone_controller is not None:
+                    program.drone_controller.reset()
+                if program.rl_evacuee_controller is not None:
+                    program.rl_evacuee_controller.reset()
+                program.plan_drone_routes()
+            program.transition_to(SimulationPausedState())
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -1823,6 +2369,10 @@ class SimulationRunningState(ProgramState):
             program.simulation_options.action = Action.USE_STAIRS
 
     def update(self, program):
+        if program.simulation.started and len(program.simulation.evacuees) == 0:
+            program.transition_to(SimulationPausedState())
+            return
+
         options = program.simulation_options
         if options.rl_evacuees:
             evacuee_actions = program.rl_evacuee_controller.get_actions(program.simulation)
@@ -1852,16 +2402,11 @@ class SimulationPausedState(ProgramState):
     can_pan = True
     render_options_enabled = True
     floor_switch_enabled = True
-    key_bindings = (
-        "P: Resume",
-        "M: Place hazards (temp walls)",
-        "C/B/V: Overlays",
-        "G: Grid",
-    )
+    key_bindings = ()
 
     def __init__(self):
         self._floor_tabs = {}
-        self._add_floor_btn = None
+        self._btn_add_floor = None
         self._save_btn = None
         self._menu_btn = None
         self._nav_edit = None
@@ -1871,6 +2416,13 @@ class SimulationPausedState(ProgramState):
         self._btn_resume = None
         self._btn_reset = None
         self._btn_start_sim = None
+        self._btn_toggle_clusters = None
+        self._btn_toggle_connections = None
+        self._btn_toggle_routes = None
+        self._btn_toggle_assignments = None
+        self._btn_toggle_grid = None
+        self._btn_toggle_heatmap = None
+        self._btn_finish = None
 
     def enter(self, program):
         self._rebuild_ui(program)
@@ -1937,7 +2489,7 @@ class SimulationPausedState(ProgramState):
             )
             self._floor_tabs[f_id] = tab_btn
             tab_x += 106
-        
+
         self._btn_add_floor = pygame_gui.elements.UIButton(
             pygame.Rect(tab_x + 6, 54, 105, 28),
             "+ Add Floor",
@@ -1945,18 +2497,59 @@ class SimulationPausedState(ProgramState):
             object_id="#btn_add_floor",
         )
 
-
         tool_x = sidebar_x + 16
         tool_w = 248
+        btn_w_half = 122
+        gap = 4
+        opts = program.view_options
 
         self._btn_hazard = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, 248, tool_w, 40),
+            pygame.Rect(tool_x, 246, tool_w, 34),
             "Place Hazards (M)",
             manager=program.ui_manager,
             object_id="#tool_btn",
         )
 
-        playback_y = 564
+        y = 322
+        self._btn_toggle_clusters = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Clusters",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_clusters else "#tool_btn",
+        )
+        self._btn_toggle_connections = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Links",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_cluster_connections else "#tool_btn",
+        )
+        y += 32
+        self._btn_toggle_routes = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Agent Routes",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_drone_routes else "#tool_btn",
+        )
+        self._btn_toggle_assignments = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Assign",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_assignments else "#tool_btn",
+        )
+        y += 32
+        self._btn_toggle_grid = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, y, btn_w_half, 28),
+            "Grid",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_grid else "#tool_btn",
+        )
+        self._btn_toggle_heatmap = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + btn_w_half + gap, y, btn_w_half, 28),
+            "Heatmap",
+            manager=program.ui_manager,
+            object_id="#tool_btn_selected" if opts.show_heatmap else "#tool_btn",
+        )
+        playback_y = 458
         self._btn_start_sim = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, playback_y, tool_w, 38),
             "Start Simulation",
@@ -1975,6 +2568,12 @@ class SimulationPausedState(ProgramState):
             manager=program.ui_manager,
             object_id="#btn_playback",
         )
+        self._btn_finish = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, playback_y + 86, tool_w, 32),
+            "Finish (Results)",
+            manager=program.ui_manager,
+            object_id="#btn_secondary",
+        )
 
     def handle_ui_event(self, program, event):
         if event.ui_element == self._save_btn:
@@ -1990,11 +2589,39 @@ class SimulationPausedState(ProgramState):
             program.transition_to(OverviewState())
         elif event.ui_element == self._btn_hazard:
             program.transition_to(SimulationEditorState())
+        elif event.ui_element == self._btn_finish:
+            program.transition_to(ResultsState())
+        elif event.ui_element == self._btn_toggle_clusters:
+            program.view_options.show_clusters = not program.view_options.show_clusters
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_connections:
+            program.view_options.show_cluster_connections = not program.view_options.show_cluster_connections
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_routes:
+            program.view_options.show_drone_routes = not program.view_options.show_drone_routes
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_assignments:
+            program.view_options.show_assignments = not program.view_options.show_assignments
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_grid:
+            program.view_options.show_grid = not program.view_options.show_grid
+            self._rebuild_ui(program)
+        elif event.ui_element == self._btn_toggle_heatmap:
+            program.view_options.show_heatmap = not program.view_options.show_heatmap
+            self._rebuild_ui(program)
         elif event.ui_element in (self._btn_resume, self._btn_start_sim):
             program.transition_to(SimulationRunningState())
         elif event.ui_element == self._btn_reset:
-            program.link_stairs_mode = False
-            program.transition_to(OverviewState())
+            if program.simulation:
+                program.simulation.grid_world.clear_temporary_walls()
+                program.simulation.prepare()
+                program.drone_routes = {}
+                if program.drone_controller is not None:
+                    program.drone_controller.reset()
+                if program.rl_evacuee_controller is not None:
+                    program.rl_evacuee_controller.reset()
+                program.plan_drone_routes()
+            self._rebuild_ui(program)
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -2022,19 +2649,138 @@ class SimulationEditorState(ProgramState):
     can_pan = True
     render_options_enabled = True
     floor_switch_enabled = True
-    key_bindings = (
-        "Enter: Return to pause",
-        "LMB: Place temporary wall",
-        "RMB: Erase temporary wall",
-        "G: Grid",
-    )
+    key_bindings = ()
+
+    def __init__(self):
+        self._floor_tabs = {}
+        self._save_btn = None
+        self._menu_btn = None
+        self._nav_edit = None
+        self._nav_link = None
+        self._nav_sim = None
+        self._btn_done = None
+        self._btn_clear_hazards = None
+
+    def enter(self, program):
+        self._rebuild_ui(program)
+
+    def on_floor_changed(self, program):
+        self._rebuild_ui(program)
 
     def exit(self, program):
         program.replan_drone_routes_after_hazard()
+        if program.ui_manager is not None:
+            program.ui_manager.clear_and_reset()
+
+    def _rebuild_ui(self, program):
+        if program.ui_manager is None:
+            return
+        program.ui_manager.clear_and_reset()
+        self._floor_tabs = {}
+        screen_w, screen_h = program.screen.get_size()
+        sidebar_x = screen_w - SIDEBAR_WIDTH
+
+        self._save_btn = pygame_gui.elements.UIButton(
+            pygame.Rect(270, 9, 115, 30),
+            "Save (Ctrl+S)",
+            manager=program.ui_manager,
+            object_id="#save_button",
+        )
+        self._menu_btn = pygame_gui.elements.UIButton(
+            pygame.Rect(395, 9, 70, 30),
+            "Menu",
+            manager=program.ui_manager,
+            object_id="#menu_button",
+        )
+
+        switcher_w = 510
+        switcher_x = screen_w - switcher_w - 16
+        tab_item_w = 168
+        self._nav_edit = pygame_gui.elements.UIButton(
+            pygame.Rect(switcher_x + 2, 9, tab_item_w, 30),
+            "1. Edit Map",
+            manager=program.ui_manager,
+            object_id="#nav_item_inactive",
+        )
+        self._nav_link = pygame_gui.elements.UIButton(
+            pygame.Rect(switcher_x + 2 + tab_item_w, 9, tab_item_w, 30),
+            "2. Link Stairs",
+            manager=program.ui_manager,
+            object_id="#nav_item_inactive",
+        )
+        self._nav_sim = pygame_gui.elements.UIButton(
+            pygame.Rect(switcher_x + 2 + tab_item_w * 2, 9, tab_item_w, 30),
+            "3. Simulate",
+            manager=program.ui_manager,
+            object_id="#nav_item_active",
+        )
+
+        world = program.simulation.grid_world if program.simulation else None
+        floor_count = len(world.floors) if world else 1
+        active_floor_id = world.active_floor_id if world else 0
+
+        tab_x = 14
+        for f_id in range(floor_count):
+            is_active = (f_id == active_floor_id)
+            obj_id = "#floor_tab_active" if is_active else "#floor_tab_inactive"
+            tab_btn = pygame_gui.elements.UIButton(
+                pygame.Rect(tab_x, 52, 100, 32),
+                f"Floor {f_id + 1}",
+                manager=program.ui_manager,
+                object_id=obj_id,
+            )
+            self._floor_tabs[f_id] = tab_btn
+            tab_x += 106
+
+        tool_x = sidebar_x + 16
+        tool_w = 248
+
+        self._btn_done = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, 248, tool_w, 38),
+            "Done (Return to Simulation)",
+            manager=program.ui_manager,
+            object_id="#btn_playback",
+        )
+        self._btn_clear_hazards = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, 294, tool_w, 34),
+            "Clear All Hazards",
+            manager=program.ui_manager,
+            object_id="#btn_secondary",
+        )
+
+    def handle_ui_event(self, program, event):
+        if event.ui_element == self._save_btn:
+            _save_project(program)
+        elif event.ui_element == self._menu_btn:
+            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            if program.ui_manager:
+                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+            program.transition_to(MainMenuState())
+        elif event.ui_element == self._nav_edit:
+            program.transition_to(EditorState())
+        elif event.ui_element == self._nav_link:
+            program.transition_to(OverviewState())
+        elif event.ui_element in (self._nav_sim, self._btn_done):
+            program.transition_to(SimulationPausedState())
+        elif event.ui_element == self._btn_clear_hazards:
+            program.simulation.grid_world.clear_temporary_walls()
+            program.replan_drone_routes_after_hazard()
+            self._rebuild_ui(program)
+        else:
+            for f_id, tab_btn in self._floor_tabs.items():
+                if event.ui_element == tab_btn:
+                    world = program.simulation.grid_world
+                    if f_id != world.active_floor_id:
+                        world.set_active_floor(f_id)
+                        program.update_window_for_active_floor()
+                        self._rebuild_ui(program)
+                    break
 
     def handle_key(self, program, key):
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             program.transition_to(SimulationPausedState())
+        elif key == pygame.K_s and pygame.key.get_mods() & (pygame.KMOD_CTRL | pygame.KMOD_META):
+            _save_project(program)
 
     def handle_mouse(self, program, event):
         screen_w, screen_h = program.screen.get_size()
@@ -2045,9 +2791,13 @@ class SimulationEditorState(ProgramState):
 
         world = program.simulation.grid_world
         grid_x, grid_y = pixel_to_grid(*event.pos)
-        world.set_temporary_wall(
+        if not world.map_grid.in_bounds(grid_x, grid_y):
+            return
+        placed = world.set_temporary_wall(
             world.active_floor_id, grid_x, grid_y, event.button == 1
         )
+        if placed:
+            program.replan_drone_routes_after_hazard()
 
 
 class ResultsState(ProgramState):
@@ -2055,10 +2805,7 @@ class ResultsState(ProgramState):
     can_pan = True
     render_options_enabled = True
     floor_switch_enabled = True
-    key_bindings = (
-        "Enter: Return to overview",
-        "G: Grid",
-    )
+    key_bindings = ()
 
     def __init__(self):
         self._btn_reset = None
@@ -2095,7 +2842,7 @@ class ResultsState(ProgramState):
             object_id="#nav_item_inactive",
         )
         self._btn_reset = pygame_gui.elements.UIButton(
-            pygame.Rect(sidebar_x + 16, 564, 248, 38),
+            pygame.Rect(sidebar_x + 16, 216, 248, 38),
             "Reset Simulation",
             manager=program.ui_manager,
             object_id="#btn_start_sim",
@@ -2106,7 +2853,18 @@ class ResultsState(ProgramState):
             program.ui_manager.clear_and_reset()
 
     def handle_ui_event(self, program, event):
-        if event.ui_element == self._btn_reset or event.ui_element == self._nav_link:
+        if event.ui_element == self._btn_reset:
+            if program.simulation:
+                program.simulation.grid_world.clear_temporary_walls()
+                program.simulation.prepare()
+                program.drone_routes = {}
+                if program.drone_controller is not None:
+                    program.drone_controller.reset()
+                if program.rl_evacuee_controller is not None:
+                    program.rl_evacuee_controller.reset()
+                program.plan_drone_routes()
+            program.transition_to(SimulationPausedState())
+        elif event.ui_element == self._nav_link:
             program.link_stairs_mode = False
             program.transition_to(OverviewState())
         elif event.ui_element == self._nav_edit:

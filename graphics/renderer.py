@@ -43,7 +43,6 @@ def draw_map(screen, grid, show_grid):
             pos_x, pos_y = grid_to_pixel(x, y)
             color = CELL_COLORS.get(value, Color.EMPTY.value)
 
-            # Draw the cell
             pygame.draw.rect(
                 screen,
                 color,
@@ -59,7 +58,6 @@ def draw_map(screen, grid, show_grid):
                     config.drawing_size // 2,
                 )
 
-            # Draw the grid line
             if show_grid:
                 pygame.draw.rect(
                     screen,
@@ -112,6 +110,154 @@ def draw_temporary_walls(screen, grid):
                 (pos_x + 2, pos_y + config.drawing_size - 3),
                 2,
             )
+
+
+def draw_map_scale(screen, font, top_left=None, bottom_left=None, cell_size_m=0.6):
+    cells_count = 5
+    real_dist_m = cells_count * cell_size_m
+    line_px = int(cells_count * config.drawing_size)
+
+    box_w = max(line_px + 40, 154)
+    box_h = 48
+
+    if top_left is not None:
+        x, y = top_left
+    elif bottom_left is not None:
+        x, bl_y = bottom_left
+        y = bl_y - box_h
+    else:
+        x, y = 14, 240
+
+    bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+    bg.fill((20, 20, 20, 220))
+    pygame.draw.rect(bg, (55, 55, 55, 220), bg.get_rect(), 1, border_radius=6)
+    screen.blit(bg, (x, y))
+
+    if cell_size_m >= 1.0:
+        scale_title = f"SCALE: 1 cell = {cell_size_m:.2f}m"
+    else:
+        scale_title = f"SCALE: 1 cell = {cell_size_m * 100:.0f}cm"
+    title_lbl = font.render(scale_title, True, (170, 170, 170))
+    screen.blit(title_lbl, (x + 14, y + 5))
+
+    bar_x = x + 14
+    bar_y = y + 26
+    bar_h = 6
+
+    mid_px = line_px // 2
+    pygame.draw.rect(screen, (240, 240, 240), (bar_x, bar_y, mid_px, bar_h))
+    pygame.draw.rect(screen, (200, 200, 200), (bar_x, bar_y, mid_px, bar_h), 1)
+
+    pygame.draw.rect(screen, (40, 40, 40), (bar_x + mid_px, bar_y, line_px - mid_px, bar_h))
+    pygame.draw.rect(screen, (200, 200, 200), (bar_x + mid_px, bar_y, line_px - mid_px, bar_h), 1)
+
+    pygame.draw.line(screen, (240, 240, 240), (bar_x, bar_y - 2), (bar_x, bar_y + bar_h + 2), 1)
+    pygame.draw.line(screen, (240, 240, 240), (bar_x + mid_px, bar_y - 2), (bar_x + mid_px, bar_y + bar_h + 2), 1)
+    pygame.draw.line(screen, (240, 240, 240), (bar_x + line_px, bar_y - 2), (bar_x + line_px, bar_y + bar_h + 2), 1)
+
+    def _fmt_dist(v):
+        if v < 1.0:
+            return f"{v * 100:.0f}cm"
+        if abs(round(v, 2) - round(v, 1)) < 1e-4:
+            return f"{v:.1f}m"
+        return f"{v:.2f}m"
+
+    t0 = font.render("0", True, (210, 210, 210))
+    t_end = font.render(_fmt_dist(real_dist_m), True, (210, 210, 210))
+
+    screen.blit(t0, (bar_x - t0.get_width() // 2, bar_y + bar_h + 3))
+    screen.blit(t_end, (bar_x + line_px - t_end.get_width() // 2, bar_y + bar_h + 3))
+
+    if line_px >= 90:
+        mid_val = real_dist_m / 2
+        t_mid = font.render(_fmt_dist(mid_val), True, (170, 170, 170))
+        screen.blit(t_mid, (bar_x + mid_px - t_mid.get_width() // 2, bar_y + bar_h + 3))
+
+    return box_h
+
+
+def draw_heatmap(screen, floor):
+    if floor is None or not hasattr(floor, "heatmap_grid") or floor.heatmap_grid is None:
+        return
+    grid = floor.heatmap_grid
+    overlay = pygame.Surface((screen.get_width(), screen.get_height()), pygame.SRCALPHA)
+    d_size = config.drawing_size
+
+    for y in range(grid.height):
+        for x in range(grid.width):
+            val = grid.get(x, y)
+            if not val or val <= 0:
+                continue
+            px, py = grid_to_pixel(x, y)
+            if val < 5:
+                color = (34, 197, 94, 90)
+            elif val < 15:
+                color = (59, 130, 246, 120)
+            elif val < 35:
+                color = (234, 179, 8, 150)
+            elif val < 70:
+                color = (249, 115, 22, 180)
+            else:
+                color = (239, 68, 68, 220)
+            pygame.draw.rect(overlay, color, (px, py, d_size, d_size))
+            if val >= 35:
+                pygame.draw.rect(overlay, (255, 255, 255, 80), (px, py, d_size, d_size), 1)
+
+    screen.blit(overlay, (0, 0))
+
+
+def draw_legend(screen, font, top_left=None, bottom_left=None):
+    legend_items = [
+        ("Wall", Color.WALL.value, False),
+        ("Exit", Color.EXIT.value, False),
+        ("Stairs", Color.STAIRS.value, False),
+        ("Evacuee", Color.EVACUEE.value, True),
+        ("Agent", Color.DRONE.value, True),
+        ("Hazard", Color.TEMPORARY_WALL.value, False),
+    ]
+
+    pad_x, pad_y = 12, 8
+    item_h = 18
+    total_h = len(legend_items) * item_h + pad_y * 2 + 14
+    total_w = 146
+
+    if top_left is not None:
+        x, y = top_left
+    elif bottom_left is not None:
+        x, bl_y = bottom_left
+        y = bl_y - total_h
+    else:
+        x, y = 14, 96
+
+    bg = pygame.Surface((total_w, total_h), pygame.SRCALPHA)
+    bg.fill((22, 22, 22, 210))
+    pygame.draw.rect(bg, (55, 55, 55, 210), bg.get_rect(), 1, border_radius=6)
+    screen.blit(bg, (x, y))
+
+    title = font.render("LEGEND", True, (160, 160, 160))
+    screen.blit(title, (x + pad_x, y + 6))
+
+    cur_y = y + 24
+    for name, color, is_circle in legend_items:
+        center_y = cur_y + item_h // 2
+        if is_circle:
+            pygame.draw.circle(screen, color, (x + pad_x + 5, center_y), 5)
+            pygame.draw.circle(screen, (255, 255, 255), (x + pad_x + 5, center_y), 5, 1)
+        elif name == "Hazard":
+            h_rect = pygame.Rect(x + pad_x, center_y - 5, 11, 11)
+            pygame.draw.rect(screen, color, h_rect, border_radius=2)
+            pygame.draw.line(screen, Color.WALL.value, (h_rect.x + 1, h_rect.y + 1), (h_rect.right - 2, h_rect.bottom - 2), 1)
+            pygame.draw.line(screen, Color.WALL.value, (h_rect.right - 2, h_rect.y + 1), (h_rect.x + 1, h_rect.bottom - 2), 1)
+            pygame.draw.rect(screen, (160, 60, 40), h_rect, 1, border_radius=2)
+        else:
+            pygame.draw.rect(screen, color, (x + pad_x, center_y - 5, 11, 11), border_radius=2)
+            pygame.draw.rect(screen, (80, 80, 80), (x + pad_x, center_y - 5, 11, 11), 1, border_radius=2)
+
+        txt = font.render(name, True, (220, 220, 220))
+        screen.blit(txt, (x + pad_x + 20, cur_y + 1))
+        cur_y += item_h
+
+    return total_h
 
 
 def draw_key_bindings(screen, font, key_bindings):

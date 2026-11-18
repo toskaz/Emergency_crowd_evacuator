@@ -12,6 +12,7 @@ class Floor:
     def __init__(self, floor_id, map_grid):
         self.id = floor_id
         self.map_grid = map_grid
+        self.cell_size_m = getattr(map_grid, 'cell_size_m', 0.6)
         self.evacuee_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.drone_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.rebuild_map_data()
@@ -27,12 +28,16 @@ class Floor:
                     self.wall_and_exit_grid.set(x, y, cell_type)
 
         self.simulation_grid = self.wall_and_exit_grid.copy()
-        self.temporary_wall_grid = Grid(
-            self.map_grid.width, self.map_grid.height, False
-        )
+        if not hasattr(self, "temporary_wall_grid") or self.temporary_wall_grid is None:
+            self.temporary_wall_grid = Grid(
+                self.map_grid.width, self.map_grid.height, False
+            )
         self.cluster_grid = ClusterGrid(self.map_grid)
         logger.debug("Clusters generated for floor %d", self.id + 1)
         self.distance_map = None
+        self.heatmap_grid = Grid(
+            self.map_grid.width, self.map_grid.height, 0
+        )
         self.drone_assignment_grid = Grid(
             self.map_grid.width, self.map_grid.height, None
         )
