@@ -1554,13 +1554,15 @@ class SimulationEditorState(ProgramState):
         "RMB: Erase temporary wall",
         "G: Grid",
     )
+    def __init__(self, return_to_running=False):
+        self.return_to_running = return_to_running
 
     def exit(self, program):
         program.replan_drone_routes_after_hazard()
 
     def handle_key(self, program, key):
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
-            program.transition_to(SimulationPausedState())
+            self._finish(program)
 
     def handle_mouse(self, program, event):
         screen_w, screen_h = program.screen.get_size()
@@ -1574,6 +1576,12 @@ class SimulationEditorState(ProgramState):
         world.set_temporary_wall(
             world.active_floor_id, grid_x, grid_y, event.button == 1
         )
+
+    def _finish(self, program):
+        if self.return_to_running:
+            program.transition_to(SimulationRunningState())
+        else:
+            program.transition_to(SimulationPausedState())
 
 
 class ResultsState(ProgramState):
