@@ -180,7 +180,7 @@ class Window:
 
         r3_y = r2_y + 36
         lbl_scale = self.font.render("Scale:", True, (170, 170, 170))
-        val_scale = self.font.render("1 px = 60 cm", True, (240, 240, 240))
+        val_scale = self.font.render("1 cell = 60 cm", True, (240, 240, 240))
         screen.blit(lbl_scale, (card_rect.x + 14, r3_y))
         screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, r3_y))
 

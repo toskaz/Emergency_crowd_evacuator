@@ -861,7 +861,7 @@ class CalibrationState(ProgramState):
 
         real_cm = round(60.0 * (cur_bs / 25.0))
         lbl_scale = self.font.render("Real Scale:", True, (170, 170, 170))
-        val_scale = self.font.render(f"1 cell ≈ {real_cm} cm", True, (240, 240, 240))
+        val_scale = self.font.render(f"1 cell = {real_cm} cm", True, (240, 240, 240))
         screen.blit(lbl_scale, (card_rect.x + 14, card_rect.y + 48))
         screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, card_rect.y + 48))
 
