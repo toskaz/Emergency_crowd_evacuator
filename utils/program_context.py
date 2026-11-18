@@ -6,6 +6,7 @@ import pygame
 import pygame_gui
 
 from controls.action import Action
+from controls.action_controller import get_actions
 from controls.drone_dqn import DQNDroneController
 from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
@@ -29,9 +30,9 @@ TOP_BAR_HEIGHT = 88
 @dataclass
 class ViewOptions:
     show_grid: bool = False
-    show_clusters: bool = True
-    show_cluster_connections: bool = True
-    show_drone_routes: bool = True
+    show_clusters: bool = False
+    show_cluster_connections: bool = False
+    show_drone_routes: bool = False
     show_assignments: bool = False
 
 
@@ -43,6 +44,8 @@ class SimulationOptions:
 
 
 class ProgramContext:
+    speed_multipliers = (0.5, 0.75, 1.0, 2.0, 4.0)
+
     def __init__(self):
         pygame.init()
 
@@ -63,6 +66,8 @@ class ProgramContext:
         self.link_stairs_mode = False
         self.view_options = ViewOptions()
         self.simulation_options = SimulationOptions()
+        self.speed_multiplier = 1.0
+        self.simulation_tick_accumulator = 0.0
 
         self.state = MainMenuState()
         logger.debug("Initial application state: %s", self.state.name)
@@ -152,6 +157,7 @@ class ProgramContext:
 
     def transition_to(self, state):
         logger.debug("Application state changed: %s -> %s", self.state.name, state.name)
+        self.simulation_tick_accumulator = 0.0
         self.state.exit(self)
         self.state = state
         self.state.enter(self)
@@ -167,3 +173,72 @@ class ProgramContext:
         )
         for drone in replanned_drones:
             self.drone_controller.route_cursors.pop(drone, None)
+
+    def set_speed_multiplier(self, multiplier):
+        if multiplier not in self.speed_multipliers:
+            raise ValueError(f"Unsupported simulation speed: {multiplier}")
+        self.speed_multiplier = multiplier
+        self.simulation_tick_accumulator = 0.0
+
+    def step_simulation(self, *, keep_paused=False):
+        if self.simulation is None:
+            raise RuntimeError("Cannot step before a simulation world is initialized")
+
+        simulation = self.simulation
+        if not simulation.prepared:
+            simulation.prepare()
+            if self.coordinator is not None:
+                self.plan_drone_routes()
+
+        options = self.simulation_options
+        if options.rl_evacuees:
+            evacuee_actions = self.rl_evacuee_controller.get_actions(simulation)
+        else:
+            evacuee_actions = get_actions(simulation.evacuees, options.action)
+
+        if options.autonomous_drones:
+            cell_routes = (
+                self.coordinator.refresh_cell_routes(simulation.drones)
+                if self.coordinator is not None
+                else {}
+            )
+            drone_actions = self.drone_controller.get_actions(
+                simulation,
+                self.drone_routes,
+                cell_routes,
+            )
+        else:
+            drone_actions = get_actions(simulation.drones, options.action)
+
+        was_started = simulation.started
+        simulation.step(evacuee_actions, drone_actions)
+        if keep_paused and not was_started:
+            simulation.started = False
+
+        if options.action is Action.USE_STAIRS:
+            options.action = Action.STAY
+        if options.autonomous_drones:
+            self.drone_controller.learn(simulation, self.drone_routes)
+
+    def reset_simulation(
+        self, *, restore_base_map=False, clear_stair_selection=True, clear_link_mode=False
+    ):
+        self.simulation_tick_accumulator = 0.0
+        world = self.simulation.grid_world
+        world.clear_temporary_walls()
+        if restore_base_map:
+            world.restore_base_maps()
+        if clear_stair_selection:
+            world.pending_stair_endpoint = None
+            world.stair_link_error = None
+            world.stair_link_notice = None
+        if clear_link_mode:
+            self.link_stairs_mode = False
+
+        self.simulation.prepare()
+        if self.drone_controller is not None:
+            self.drone_controller.reset()
+        if self.rl_evacuee_controller is not None:
+            self.rl_evacuee_controller.reset()
+        self.plan_drone_routes()
+        self.simulation_options.action = Action.STAY

@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#090d16" />
+    <title>Evacuate · Emergency Operations</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/web/styles.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+  </head>
+  <body class="bg-[#090D16] text-slate-100 antialiased">
+    <main id="app" class="relative h-screen w-screen overflow-hidden">
+      <canvas id="floorplan" aria-label="Interactive evacuation floorplan"></canvas>
+
+      <header class="glass topbar">
+        <a class="brand" href="#" aria-label="Evacuate home">
+          <span class="brand-mark"><i data-lucide="radio-tower"></i></span>
+          <span><strong>EVACUATE</strong><small>OPERATIONS CONSOLE</small></span>
+        </a>
+        <div id="floorSelector" class="floor-selector"></div>
+        <input id="uploadInput" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" hidden />
+        <div class="workflow" role="group" aria-label="Workflow">
+          <button data-mode="editor"><span>01</span> Edit map</button>
+          <button data-mode="overview"><span>02</span> Link stairs</button>
+          <button data-mode="simulate"><span>03</span> Simulate</button>
+        </div>
+        <div class="header-actions">
+          <button class="icon-button" data-action="save" title="Save project" aria-label="Save project"><i data-lucide="save"></i></button>
+          <button class="icon-button" data-action="load" title="Load project" aria-label="Load project"><i data-lucide="folder-open"></i></button>
+          <input id="loadInput" type="file" accept="application/json,.json" hidden />
+        </div>
+      </header>
+
+      <div class="canvas-hint glass"><span class="live-dot"></span><span id="connectionLabel">Connecting</span><span class="hint-divider"></span><kbd>SPACE</kbd> pan <span class="hint-divider"></span><kbd>SCROLL</kbd> zoom</div>
+
+      <section id="overlayBar" class="glass overlay-bar" aria-label="Map overlays">
+        <span class="eyebrow">OVERLAYS</span>
+        <button data-overlay="grid" aria-pressed="false"><i data-lucide="grid-2x2"></i>Grid</button>
+        <button data-overlay="clusters" aria-pressed="false"><i data-lucide="layers-2"></i>Clusters</button>
+        <button data-overlay="routes" aria-pressed="false"><i data-lucide="route"></i>Drone routes</button>
+        <button data-overlay="heatmap" aria-pressed="false"><i data-lucide="flame"></i>Congestion</button>
+      </section>
+
+      <aside id="sidePanel" class="glass side-panel"></aside>
+      <div id="toast" class="toast glass" role="status"></div>
+    </main>
+    <template id="undo-button-template">
+      <button class="button-secondary" data-action="undo" title="Undo last map edit" aria-label="Undo last map edit"><i data-lucide="undo-2"></i>Undo</button>
+    </template>
+    <script src="/web/app.js" defer></script>
+  </body>
+</html>

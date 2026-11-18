@@ -12,13 +12,15 @@ CARDINAL_NEIGHBORS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
 class ClusterGrid:
-    def __init__(self, grid, *, include_doors=True):
+    def __init__(self, grid, *, include_doors=True, temporary_wall_grid=None):
         self.grid = Grid(grid.width, grid.height)
         self.clusters = []
         self.adjacent_cluster_pairs = set()
+        self.temporary_wall_grid = temporary_wall_grid
         self.build(grid, include_doors=include_doors)
 
     def build(self, grid, *, include_doors=True):
+        self.map_grid = grid
         if include_doors:
             self.add_door_sectors(grid)
         cluster_width = 2 * cluster_size + 1
@@ -214,8 +216,12 @@ class ClusterGrid:
 
         for cluster_id, cluster in enumerate(self.clusters):
             for x, y in cluster.cells:
+                if not self._is_walkable(x, y):
+                    continue
                 for neighbor_x, neighbor_y in ((x + 1, y), (x, y + 1)):
                     if not self.grid.in_bounds(neighbor_x, neighbor_y):
+                        continue
+                    if not self._is_walkable(neighbor_x, neighbor_y):
                         continue
 
                     neighbor_id = self.grid.get(neighbor_x, neighbor_y)
@@ -225,3 +231,12 @@ class ClusterGrid:
                     self.adjacent_cluster_pairs.add(
                         (min(cluster_id, neighbor_id), max(cluster_id, neighbor_id))
                     )
+
+    def _is_walkable(self, x, y):
+        return (
+            self.map_grid.get(x, y) != CellType.WALL
+            and (
+                self.temporary_wall_grid is None
+                or not self.temporary_wall_grid.get(x, y)
+            )
+        )

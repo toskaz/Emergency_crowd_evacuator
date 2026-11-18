@@ -14,6 +14,8 @@ from graphics.renderer import (
     draw_temporary_walls,
     draw_stair_highlights,
     draw_assignment_groups,
+    draw_entities,
+    draw_results_chart,
 )
 
 
@@ -65,12 +67,25 @@ class Window:
 
         self.screen.set_clip(canvas_rect)
         self._draw_grid(context, grid)
-        if context.simulation and context.simulation.started:
+        if context.simulation:
             draw_temporary_walls(
                 self.screen, context.simulation.grid_world.temporary_wall_grid
             )
         if context.state.render_options_enabled:
             self._draw_overlays(context)
+        if context.simulation and context.state.name != "editor":
+            draw_entities(
+                self.screen,
+                context.simulation,
+                context.simulation.grid_world.active_floor_id,
+            )
+        if context.state.name == "results":
+            draw_results_chart(
+                self.screen,
+                context.simulation,
+                self.font,
+                self.small_font,
+            )
         self._draw_ui(context, key_bindings, selected_tool)
         self.screen.set_clip(None)
 
@@ -123,7 +138,6 @@ class Window:
         pygame.draw.line(screen, Color.DIVIDER.value, (0, 47), (screen_w, 47), 1)
 
         mark_rect = pygame.Rect(16, 12, 24, 24)
-        
         pygame.draw.rect(screen, Color.ACCENT_BLUE.value, mark_rect, border_radius=5)
 
         pygame.draw.polygon(screen, (255, 255, 255), [
@@ -140,7 +154,7 @@ class Window:
 
         switcher_w = 510
         switcher_x = screen_w - switcher_w - 16
-        pygame.draw.rect(screen, (21, 21, 21), (switcher_x, 7, switcher_w, 34), border_radius=6)
+        pygame.draw.rect(screen, Color.BACKGROUND.value, (switcher_x, 7, switcher_w, 34), border_radius=6)
 
         pygame.draw.rect(screen, Color.FLOORTABS_BG.value, (0, 48, sidebar_x, 40))
         pygame.draw.line(screen, Color.DIVIDER.value, (0, 87), (sidebar_x, 87), 1)
@@ -151,7 +165,7 @@ class Window:
         pygame.draw.rect(screen, Color.SIDEBAR_BG.value, (sidebar_x, 48, 280, screen_h - 48))
         pygame.draw.line(screen, Color.DIVIDER.value, (sidebar_x, 48), (sidebar_x, screen_h), 1)
 
-        stats_header = self.tiny_font.render("SIMULATION STATS", True, Color.TEXT_MUTED.value)
+        stats_header = self.tiny_font.render("LIVE TELEMETRY", True, Color.TEXT_MUTED.value)
         screen.blit(stats_header, (sidebar_x + 16, 62))
 
         card_rect = pygame.Rect(sidebar_x + 16, 84, 248, 118)
@@ -161,45 +175,51 @@ class Window:
         evacuated = context.simulation.evacuated_count if context.simulation else 0
         total = evacuated + len(context.simulation.evacuees) if context.simulation else 0
         step = context.simulation.step_count if context.simulation else 0
+        remaining = len(context.simulation.evacuees) if context.simulation else 0
+        percent = (100 * evacuated / total) if total else 0
+        speed_text = f"{context.speed_multiplier:.2f}".rstrip("0")
+        if speed_text.endswith("."):
+            speed_text += "0"
+        hazards = 0
+        if context.simulation:
+            hazards = sum(
+                sum(sum(bool(cell) for cell in row) for row in floor.temporary_wall_grid.cells)
+                for floor in context.simulation.grid_world.floors.values()
+            )
 
-        r1_y = card_rect.y + 11
-        lbl_step = self.font.render("Step:", True, (170, 170, 170))
-        val_step = self.font.render(str(step), True, (240, 240, 240))
-        screen.blit(lbl_step, (card_rect.x + 14, r1_y))
-        screen.blit(val_step, (card_rect.right - val_step.get_width() - 14, r1_y))
+        telemetry = (
+            ("Step (Tick)", str(step)),
+            ("Evacuated", f"{evacuated} / {total} ({percent:.1f}%)"),
+            ("Remaining", str(remaining)),
+            ("Active Hazards", str(hazards)),
+            ("Speed", f"{speed_text}x"),
+        )
+        for index, (label, value) in enumerate(telemetry):
+            row_y = card_rect.y + 8 + index * 20
+            label_surface = self.small_font.render(label, True, Color.TEXT_MUTED.value)
+            value_surface = self.small_font.render(value, True, Color.TEXT_PRIMARY.value)
+            screen.blit(label_surface, (card_rect.x + 10, row_y))
+            screen.blit(
+                value_surface,
+                (card_rect.right - value_surface.get_width() - 10, row_y),
+            )
 
-        pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, r1_y + 26), (card_rect.right - 14, r1_y + 26), 1)
+        pygame.draw.line(screen, Color.DIVIDER.value, (sidebar_x + 16, 216), (screen_w - 16, 216), 1)
 
-        r2_y = r1_y + 36
-        lbl_evac = self.font.render("Evacuated:", True, (170, 170, 170))
-        val_evac = self.font.render(f"{evacuated} / {total}", True, (240, 240, 240))
-        screen.blit(lbl_evac, (card_rect.x + 14, r2_y))
-        screen.blit(val_evac, (card_rect.right - val_evac.get_width() - 14, r2_y))
-
-        pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, r2_y + 26), (card_rect.right - 14, r2_y + 26), 1)
-
-        r3_y = r2_y + 36
-        lbl_scale = self.font.render("Scale:", True, (170, 170, 170))
-        val_scale = self.font.render("1 px = 60 cm", True, (240, 240, 240))
-        screen.blit(lbl_scale, (card_rect.x + 14, r3_y))
-        screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, r3_y))
-
-        pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, 216), (screen_w - 16, 216), 1)
-
-        tools_header = self.tiny_font.render("TOOLS", True, (181, 181, 181))
+        tools_header = self.tiny_font.render("TOOLS", True, Color.TEXT_MUTED.value)
         screen.blit(tools_header, (sidebar_x + 16, 226))
 
         mode_name = "Edit Mode" if context.state.name == "editor" else context.state.name.replace("_", " ").title()
-        mode_label = self.tiny_font.render(mode_name, True, (141, 141, 141))
+        mode_label = self.tiny_font.render(mode_name, True, Color.TEXT_MUTED.value)
         screen.blit(mode_label, (screen_w - 16 - mode_label.get_width(), 226))
 
         if context.state.name == "overview":
             self._draw_sidebar_stairs_info(context, sidebar_x, screen_w)
 
         playback_div_y = 538
-        pygame.draw.line(screen, (56, 56, 56), (sidebar_x + 16, playback_div_y), (screen_w - 16, playback_div_y), 1)
+        pygame.draw.line(screen, Color.DIVIDER.value, (sidebar_x + 16, playback_div_y), (screen_w - 16, playback_div_y), 1)
 
-        playback_header = self.tiny_font.render("SIMULATION PLAYBACK", True, (170, 170, 170))
+        playback_header = self.tiny_font.render("SIMULATION PLAYBACK", True, Color.TEXT_MUTED.value)
         screen.blit(playback_header, (sidebar_x + 16, playback_div_y + 12))
 
     def _draw_sidebar_stairs_info(self, context, sidebar_x, screen_w):
@@ -212,8 +232,8 @@ class Window:
         floor_id = world.active_floor_id
 
         section_y = 392
-        pygame.draw.line(self.screen, (52, 52, 52), (sidebar_x + 16, section_y), (screen_w - 16, section_y), 1)
-        header = self.tiny_font.render(f"STAIRS (FLOOR {floor_id + 1})", True, (181, 181, 181))
+        pygame.draw.line(self.screen, Color.DIVIDER.value, (sidebar_x + 16, section_y), (screen_w - 16, section_y), 1)
+        header = self.tiny_font.render(f"STAIRS (FLOOR {floor_id + 1})", True, Color.TEXT_MUTED.value)
         self.screen.blit(header, (sidebar_x + 16, section_y + 10))
 
         card_rect = pygame.Rect(sidebar_x + 16, section_y + 28, 248, 102)
@@ -226,7 +246,7 @@ class Window:
         ]
 
         if not stair_clusters:
-            empty_txt = self.small_font.render("No stairs on this floor", True, (130, 130, 130))
+            empty_txt = self.small_font.render("No stairs on this floor", True, Color.TEXT_MUTED.value)
             self.screen.blit(empty_txt, (card_rect.x + 12, card_rect.y + 12))
             return
 
@@ -236,16 +256,16 @@ class Window:
             is_pending = (world.pending_stair_endpoint == (floor_id, cid))
             if is_pending:
                 status_text = "Selected..."
-                status_color = (255, 230, 50)
+                status_color = Color.EVACUEE.value
             elif cluster.linked_to is not None:
                 t_floor, t_cid = cluster.linked_to
                 status_text = f"-> Floor {t_floor + 1} (C{t_cid})"
-                status_color = (16, 185, 129)
+                status_color = Color.EXIT.value
             else:
                 status_text = "Unlinked"
-                status_color = (239, 68, 68)
+                status_color = Color.TEMPORARY_WALL.value
 
-            left_lbl = self.small_font.render(f"C{cid} ({int(cx)},{int(cy)})", True, (220, 220, 220))
+            left_lbl = self.small_font.render(f"C{cid} ({int(cx)},{int(cy)})", True, Color.TEXT_PRIMARY.value)
             right_lbl = self.small_font.render(status_text, True, status_color)
             self.screen.blit(left_lbl, (card_rect.x + 12, row_y))
             self.screen.blit(right_lbl, (card_rect.right - right_lbl.get_width() - 12, row_y))

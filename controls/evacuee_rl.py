@@ -8,11 +8,13 @@ import numpy as np
 from controls.action import Action
 from controls.line_of_sight import can_see
 from entities.drone import Drone
+from grids.cluster import StairCluster
 from grids.grid_world import ACTION_DIRECTIONS
 from map.cell import CellType
 
 
-MOVES = [Action.STAY, Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
+MOVEMENT_MOVES = [Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT]
+MOVES = [Action.STAY, *MOVEMENT_MOVES, Action.USE_STAIRS]
 DIRECTION_COUNT = 8
 DISTANCE_BANDS = 3
 BLOCKED_PATTERNS = 16
@@ -46,6 +48,7 @@ class QLearningFollowController:
         self.path_cache = {}
         self.exit_cells = {}
         self.failed_moves = {}
+        self.pending_stair_arrivals = {}
 
     def reset(self):
         self.last_seen.clear()
@@ -53,6 +56,7 @@ class QLearningFollowController:
         self.path_cache.clear()
         self.exit_cells.clear()
         self.failed_moves.clear()
+        self.pending_stair_arrivals.clear()
 
     def save(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +65,13 @@ class QLearningFollowController:
     def load(self, path):
         if not Path(path).exists():
             return False
-        self.q_table = np.load(path)
+        q_table = np.load(path)
+        legacy_shape = self.q_table.shape[:-1] + (len(MOVES) - 1,)
+        if q_table.shape == legacy_shape:
+            migrated = np.zeros_like(self.q_table)
+            migrated[..., :len(MOVES) - 1] = q_table
+            q_table = migrated
+        self.q_table = q_table
         return True
 
     def get_actions(self, simulation):
@@ -74,30 +84,96 @@ class QLearningFollowController:
 
     def decide(self, simulation, evacuee, leader):
         world = simulation.grid_world
+        allow_stairs = not self._is_recent_stair_arrival(world, evacuee)
         if exit_distance(world, evacuee) <= EXIT_REACH:
-            return step_towards_exit(world, evacuee)
-        if leader is None:
-            return self.follow_last_seen(world, evacuee)
-
-        self.remember_drone_position(evacuee, leader)
-        landing = world.stair_cluster_at(evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
-        if (
-            landing is not None
-            and landing == world.stair_cluster_at(leader.floor_id, leader.grid_x, leader.grid_y)
-            and world.stair_arrival(evacuee, "evacuee") is not None
-        ):
-            return Action.STAY
-        return self.follow(world, evacuee, leader)
-
-    def remember_drone_position(self, evacuee, leader):
-        if leader in self.last_seen:
-            self.last_seen[evacuee] = self.last_seen[leader]
+            action = step_towards_exit(
+                world, evacuee, allow_stairs=allow_stairs
+            )
+        elif leader is None:
+            action = self.follow_last_seen(
+                world, evacuee, allow_stairs=allow_stairs
+            )
         else:
-            self.last_seen[evacuee] = (leader.floor_id, leader.grid_x, leader.grid_y)
+            self.remember_drone_position(world, evacuee, leader)
+            if leader.floor_id != evacuee.floor_id:
+                action = self.follow_last_seen(
+                    world, evacuee, allow_stairs=allow_stairs
+                )
+            else:
+                landing = world.stair_cluster_at(
+                    evacuee.floor_id, evacuee.grid_x, evacuee.grid_y
+                )
+                if (
+                    landing is not None
+                    and landing
+                    == world.stair_cluster_at(
+                        leader.floor_id, leader.grid_x, leader.grid_y
+                    )
+                    and world.stair_arrival(evacuee, "evacuee") is not None
+                    and allow_stairs
+                ):
+                    action = Action.STAY
+                else:
+                    action = self.follow(
+                        world, evacuee, leader, allow_stairs=allow_stairs
+                    )
 
-    def follow(self, world, evacuee, leader):
+        return self._finish_action(world, evacuee, action)
+
+    def _finish_action(self, world, evacuee, action):
+        if action is Action.USE_STAIRS:
+            self.last_seen.pop(evacuee, None)
+            arrival = world.stair_arrival(evacuee, "evacuee")
+            if arrival is not None:
+                self.pending_stair_arrivals[evacuee] = arrival
+        return action
+
+    def _is_recent_stair_arrival(self, world, evacuee):
+        arrival = self.pending_stair_arrivals.get(evacuee)
+        if arrival is None:
+            return False
+        floor_id, x, y = arrival
+        if evacuee.floor_id != floor_id:
+            self.pending_stair_arrivals.pop(evacuee, None)
+            return False
+        arrived_cluster = world.stair_cluster_at(floor_id, x, y)
+        current_cluster = world.stair_cluster_at(
+            evacuee.floor_id, evacuee.grid_x, evacuee.grid_y
+        )
+        if arrived_cluster is not None and current_cluster == arrived_cluster:
+            return True
+        self.pending_stair_arrivals.pop(evacuee, None)
+        return False
+
+    def remember_drone_position(self, world, evacuee, leader):
+        if leader.floor_id != evacuee.floor_id:
+            stair_target = linked_stair_target(
+                world, evacuee, leader.floor_id
+            )
+            target = (
+                (evacuee.floor_id, *stair_target)
+                if stair_target is not None
+                else (leader.floor_id, leader.grid_x, leader.grid_y)
+            )
+            self.last_seen[evacuee] = target
+            return
+
+        target = self.last_seen.get(
+            leader, (leader.floor_id, leader.grid_x, leader.grid_y)
+        )
+        if target[0] != evacuee.floor_id:
+            stair_target = linked_stair_target(
+                world, evacuee, target[0]
+            )
+            if stair_target is not None:
+                target = (evacuee.floor_id, *stair_target)
+        self.last_seen[evacuee] = target
+
+    def follow(self, world, evacuee, leader, *, allow_stairs=True):
         state = observe(world, evacuee, leader)
-        action = self.choose_action(state, movement_options(world, evacuee))
+        action = self.choose_action(
+            state, movement_options(world, evacuee, allow_stairs=allow_stairs)
+        )
         if self.learning:
             target = (leader.floor_id, leader.grid_x, leader.grid_y)
             position = (evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
@@ -118,25 +194,47 @@ class QLearningFollowController:
         best_moves = [move for move in candidates if values[int(move)] == best_value]
         return random.choice(best_moves)
 
-    def follow_last_seen(self, world, evacuee):
+    def follow_last_seen(self, world, evacuee, *, allow_stairs=True):
         visible_exit = self.nearest_visible_exit(world, evacuee)
         if visible_exit is not None:
-            return self.step_closer(world, evacuee, *visible_exit)
+            return self.step_closer(
+                world, evacuee, *visible_exit, allow_stairs=allow_stairs
+            )
 
         target = self.last_seen.get(evacuee)
-        if target is None or target[0] != evacuee.floor_id:
-            return panic(world, evacuee)
+        if target is None:
+            return panic(world, evacuee, allow_stairs=allow_stairs)
 
-        _, target_x, target_y = target
-        landing = world.stair_cluster_at(evacuee.floor_id, evacuee.grid_x, evacuee.grid_y)
-        if landing is not None and landing == world.stair_cluster_at(target[0], target_x, target_y):
-            if world.stair_arrival(evacuee, "evacuee") is not None:
-                return Action.USE_STAIRS
+        target_floor, target_x, target_y = target
+        if target_floor != evacuee.floor_id:
+            stair_target = linked_stair_target(world, evacuee, target_floor)
+            if stair_target is None:
+                return panic(world, evacuee, allow_stairs=allow_stairs)
+            target_x, target_y = stair_target
+            self.last_seen[evacuee] = (evacuee.floor_id, target_x, target_y)
+
+        arrival = world.stair_arrival(evacuee, "evacuee")
+        if allow_stairs and arrival is not None and arrival[0] == target_floor:
+            return self._finish_action(world, evacuee, Action.USE_STAIRS)
+
+        landing = world.stair_cluster_at(
+            evacuee.floor_id, evacuee.grid_x, evacuee.grid_y
+        )
+        target_landing = world.stair_cluster_at(
+            evacuee.floor_id, target_x, target_y
+        )
+        if landing is not None and landing == target_landing:
+            if allow_stairs and arrival is not None:
+                return self._finish_action(world, evacuee, Action.USE_STAIRS)
         if (evacuee.grid_x, evacuee.grid_y) == (target_x, target_y):
             self.last_seen.pop(evacuee)
-            return panic(world, evacuee)
+            return step_towards_exit(
+                world, evacuee, allow_stairs=allow_stairs
+            )
 
-        return self.step_closer(world, evacuee, target_x, target_y)
+        return self.step_closer(
+            world, evacuee, target_x, target_y, allow_stairs=allow_stairs
+        )
 
     def nearest_visible_exit(self, world, evacuee):
         floor_id = evacuee.floor_id
@@ -152,11 +250,15 @@ class QLearningFollowController:
             return None
         return min(visible, key=lambda cell: abs(cell[0] - evacuee.grid_x) + abs(cell[1] - evacuee.grid_y))
 
-    def step_closer(self, world, evacuee, target_x, target_y):
+    def step_closer(self, world, evacuee, target_x, target_y, *, allow_stairs=True):
         target = (evacuee.floor_id, target_x, target_y)
         if target not in self.path_cache:
             self.path_cache[target] = distances_from(world, *target)
-        return step_down(self.path_cache[target], evacuee, movement_options(world, evacuee))
+        return step_down(
+            self.path_cache[target],
+            evacuee,
+            movement_options(world, evacuee, allow_stairs=allow_stairs),
+        )
 
     def learn(self, simulation):
         if not self.learning:
@@ -309,7 +411,7 @@ def distance_band(distance):
 def blocked_pattern(world, evacuee, include_people=True):
     occupancy = world.floors[evacuee.floor_id].evacuee_occupancy_grid
     pattern = 0
-    for bit, move in enumerate(MOVES[1:]):
+    for bit, move in enumerate(MOVEMENT_MOVES):
         dx, dy = ACTION_DIRECTIONS[move]
         x = evacuee.grid_x + dx
         y = evacuee.grid_y + dy
@@ -320,18 +422,28 @@ def blocked_pattern(world, evacuee, include_people=True):
 
 def legal_moves(state):
     return [Action.STAY] + [
-        move for bit, move in enumerate(MOVES[1:]) if not state[2] & (1 << bit)
+        move for bit, move in enumerate(MOVEMENT_MOVES) if not state[2] & (1 << bit)
     ]
 
 
-def movement_options(world, evacuee):
-    return legal_moves((0, 0, blocked_pattern(world, evacuee, include_people=False)))
+def movement_options(world, evacuee, *, allow_stairs=True):
+    options = legal_moves(
+        (0, 0, blocked_pattern(world, evacuee, include_people=False))
+    )
+    if allow_stairs and world.stair_arrival(evacuee, "evacuee") is not None:
+        options.append(Action.USE_STAIRS)
+    return options
 
 
-def panic(world, evacuee):
+def panic(world, evacuee, *, allow_stairs=True):
+    distance = exit_distance(world, evacuee)
+    if distance <= EXIT_REACH:
+        return step_towards_exit(world, evacuee, allow_stairs=allow_stairs)
     if random.random() < PANIC_CHANCE:
-        return random.choice(movement_options(world, evacuee))
-    return step_towards_exit(world, evacuee)
+        return random.choice(
+            movement_options(world, evacuee, allow_stairs=allow_stairs)
+        )
+    return step_towards_exit(world, evacuee, allow_stairs=allow_stairs)
 
 
 def find_exit_cells(world, floor_id):
@@ -348,26 +460,84 @@ def exit_distance(world, evacuee):
     return world.floors[evacuee.floor_id].distance_map[evacuee.grid_y][evacuee.grid_x]
 
 
-def step_towards_exit(world, entity):
+def step_towards_exit(world, entity, *, allow_stairs=True):
     distances = world.floors[entity.floor_id].distance_map
     best_action = Action.STAY
     best_distance = distances[entity.grid_y][entity.grid_x]
     entity_type = "drone" if isinstance(entity, Drone) else "evacuee"
+    occupancy = (
+        world.floors[entity.floor_id].evacuee_occupancy_grid
+        if entity_type == "evacuee"
+        else None
+    )
     arrival = world.stair_arrival(entity, entity_type)
-    if arrival is not None:
+    if allow_stairs and arrival is not None:
         floor_id, x, y = arrival
         distance = world.floors[floor_id].distance_map[y][x]
         if distance < best_distance:
             best_action = Action.USE_STAIRS
             best_distance = distance
 
-    for move in MOVES[1:]:
+    candidates = []
+    for move in MOVEMENT_MOVES:
         dx, dy = ACTION_DIRECTIONS[move]
         x = entity.grid_x + dx
         y = entity.grid_y + dy
-        if world.can_move_to(x, y, entity.floor_id) and distances[y][x] < best_distance:
-            best_action = move
-            best_distance = distances[y][x]
+        if not world.can_move_to(x, y, entity.floor_id):
+            continue
+        distance = distances[y][x]
+        is_occupied = occupancy is not None and occupancy.get(x, y) not in (
+            None,
+            entity,
+        )
+        candidates.append((distance, is_occupied, move))
+
+    improving = [
+        candidate for candidate in candidates
+        if candidate[0] < best_distance and not candidate[1]
+    ]
+    if improving:
+        return min(improving, key=lambda candidate: candidate[0])[2]
+
+    current_distance = best_distance
+    if occupancy is not None and math.isfinite(current_distance):
+        occupied_improving = [
+            candidate for candidate in candidates if candidate[0] < current_distance
+        ]
+        preferred = []
+        if occupied_improving:
+            primary_action = min(
+                occupied_improving, key=lambda candidate: candidate[0]
+            )[2]
+            dx, dy = ACTION_DIRECTIONS[primary_action]
+            lateral_directions = ((-dy, dx), (dy, -dx))
+            lateral_actions = {
+                move
+                for move, direction in ACTION_DIRECTIONS.items()
+                if direction in lateral_directions
+            }
+            preferred = [
+                candidate for candidate in candidates
+                if candidate[2] in lateral_actions
+                and not candidate[1]
+                and candidate[0] <= current_distance + 1
+            ]
+        if preferred:
+            return min(preferred, key=lambda candidate: candidate[0])[2]
+
+        sidesteps = [
+            candidate for candidate in candidates
+            if not candidate[1] and candidate[0] <= current_distance + 1
+        ]
+        if sidesteps:
+            return min(sidesteps, key=lambda candidate: candidate[0])[2]
+
+    occupied_improving = [
+        candidate for candidate in candidates if candidate[0] < best_distance
+    ]
+    if occupied_improving:
+        best_action = min(occupied_improving, key=lambda candidate: candidate[0])[2]
+        best_distance = min(candidate[0] for candidate in occupied_improving)
 
     return best_action
 
@@ -379,7 +549,7 @@ def step_down(distances, evacuee, candidates=MOVES):
         return Action.STAY
 
     for move in candidates:
-        if move == Action.STAY:
+        if move in (Action.STAY, Action.USE_STAIRS):
             continue
         dx, dy = ACTION_DIRECTIONS[move]
         distance = distances.get((evacuee.grid_x + dx, evacuee.grid_y + dy))
@@ -398,7 +568,7 @@ def distances_from(world, floor_id, start_x, start_y):
         x, y = queue.popleft()
         if distances[(x, y)] >= PATH_SEARCH_LIMIT:
             continue
-        for move in MOVES[1:]:
+        for move in MOVEMENT_MOVES:
             dx, dy = ACTION_DIRECTIONS[move]
             neighbor = (x + dx, y + dy)
             if neighbor in distances or not world.can_move_to(*neighbor, floor_id):
@@ -407,3 +577,24 @@ def distances_from(world, floor_id, start_x, start_y):
             queue.append(neighbor)
 
     return distances
+
+
+def linked_stair_target(world, evacuee, target_floor_id):
+    floor = world.floors[evacuee.floor_id]
+    reachable = distances_from(
+        world, evacuee.floor_id, evacuee.grid_x, evacuee.grid_y
+    )
+    candidates = []
+    for cluster in floor.cluster_grid.clusters:
+        if not isinstance(cluster, StairCluster) or cluster.linked_to is None:
+            continue
+        if cluster.linked_to[0] != target_floor_id:
+            continue
+        for x, y in cluster.cells:
+            distance = reachable.get((x, y))
+            if distance is not None:
+                candidates.append((distance, y, x))
+    if not candidates:
+        return None
+    _, y, x = min(candidates)
+    return x, y

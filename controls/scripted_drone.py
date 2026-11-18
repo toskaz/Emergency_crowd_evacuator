@@ -1,5 +1,6 @@
 from controls.action import Action
 from controls.evacuee_rl import find_leaders, step_towards_exit
+from controls.global_coordinator import GlobalCoordinator
 
 
 MOVE_EVERY = 2
@@ -13,13 +14,22 @@ class ScriptedDroneController:
     def reset(self):
         self.waited.clear()
 
-    def get_actions(self, simulation):
-        return [self.choose_action(simulation, drone) for drone in simulation.drones]
+    def get_actions(self, simulation, cell_routes=None):
+        return [
+            self.choose_action(simulation, drone, (cell_routes or {}).get(drone))
+            for drone in simulation.drones
+        ]
 
-    def choose_action(self, simulation, drone):
+    def choose_action(self, simulation, drone, cell_route=None):
         world = simulation.grid_world
         if world.is_exit(drone.grid_x, drone.grid_y, drone.floor_id):
             return Action.STAY
+        if cell_route:
+            action = GlobalCoordinator.action_for_cell_route(drone, cell_route)
+            if action is not None:
+                if action is Action.USE_STAIRS and world.stair_arrival(drone, "drone") is None:
+                    return Action.STAY
+                return action
         if simulation.step_count % MOVE_EVERY != 0:
             return Action.STAY
         if self.should_wait(simulation, drone) and self.waited.get(drone, 0) < MAX_WAIT:

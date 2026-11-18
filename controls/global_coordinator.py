@@ -1,8 +1,14 @@
 from collections import deque
+import heapq
+import itertools
 import logging
 import math
+from types import SimpleNamespace
 
+from controls.action import Action
 from grids.cluster import ClusterType
+from grids.grid_world import ACTION_DIRECTIONS
+from map.cell import CellType
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +17,7 @@ class GlobalCoordinator:
     def __init__(self, grid_world):
         self.world = grid_world
         self.drone_routes = {}
+        self.cell_routes = {}
 
     def get_exit_nodes(self):
         return [
@@ -53,6 +60,7 @@ class GlobalCoordinator:
                 drone.grid_y,
             )
             self.drone_routes[drone] = []
+            self.cell_routes[drone] = []
             return []
 
         # TODO: przygotowanie pod implementację Flow Rate w grafie
@@ -69,9 +77,11 @@ class GlobalCoordinator:
                 current_cluster_node,
             )
             self.drone_routes[drone] = []
+            self.cell_routes[drone] = []
             return []
 
         self.drone_routes[drone] = route
+        self.cell_routes[drone] = self.find_cell_route(drone, route)
         logger.info(
             "Coordinator assigned route for drone from %s: %s (%d clusters)",
             current_cluster_node,
@@ -80,13 +90,17 @@ class GlobalCoordinator:
         )
         return route
 
+    def replan_route(self, drone, *, refresh_graph=True):
+        if refresh_graph:
+            self.update_graph_passability()
+        return self.request_route(drone, self.get_drone_cluster(drone))
+
     def plan_initial_routes(self, drones):
         self.drone_routes.clear()
         self.update_graph_passability()
 
         for drone in drones:
-            drone_cluster = self.get_drone_cluster(drone)
-            self.request_route(drone, drone_cluster)
+            self.replan_route(drone, refresh_graph=False)
 
         return self.drone_routes
 
@@ -103,15 +117,154 @@ class GlobalCoordinator:
                     "Coordinator: Remaining route for drone at %s is blocked! Calculating new path...",
                     drone_cluster,
                 )
-                self.request_route(drone, drone_cluster)
+                self.replan_route(drone, refresh_graph=False)
                 replanned_drones.append(drone)
             else:
+                cell_route = self.cell_routes.get(drone, [])
+                if not self._is_cell_route_passable(cell_route):
+                    self.replan_route(drone, refresh_graph=False)
+                    replanned_drones.append(drone)
+                else:
+                    self.cell_routes[drone] = self.find_cell_route(
+                        drone, current_route
+                    )
                 logger.debug(
                     "Coordinator: Drone at %s can continue on its current route, hazard is behind or off-route.",
                     drone_cluster,
                 )
 
         return self.drone_routes, replanned_drones
+
+    def find_cell_route(self, drone, cluster_route):
+        """Find a walkable cell path from a drone to its assigned exit cluster."""
+        if not cluster_route:
+            return []
+        target_floor_id, target_cluster_id = cluster_route[-1]
+        target_floor = self.world.floors.get(target_floor_id)
+        if target_floor is None or not (
+            0 <= target_cluster_id < len(target_floor.cluster_grid.clusters)
+        ):
+            return []
+        targets = {
+            (target_floor_id, x, y)
+            for x, y in target_floor.cluster_grid.clusters[target_cluster_id].cells
+            if self.world.can_move_to(x, y, target_floor_id)
+        }
+        start = (drone.floor_id, drone.grid_x, drone.grid_y)
+        if not targets or not self.world.can_move_to(start[1], start[2], start[0]):
+            return []
+
+        has_linked_stairs = any(
+            cluster.type is ClusterType.STAIRS and cluster.linked_to is not None
+            for floor in self.world.floors.values()
+            for cluster in floor.cluster_grid.clusters
+        )
+        heuristic = self._cell_heuristic if not has_linked_stairs else lambda _p, _t: 0
+        order = itertools.count()
+        frontier = [(heuristic(start, targets), next(order), start)]
+        came_from = {start: None}
+        cost_so_far = {start: 0}
+        reached = None
+
+        while frontier:
+            _, _, current = heapq.heappop(frontier)
+            if current in targets:
+                reached = current
+                break
+
+            for neighbor in self._cell_neighbors(current):
+                new_cost = cost_so_far[current] + 1
+                if new_cost >= cost_so_far.get(neighbor, math.inf):
+                    continue
+                cost_so_far[neighbor] = new_cost
+                came_from[neighbor] = current
+                priority = new_cost + heuristic(neighbor, targets)
+                heapq.heappush(frontier, (priority, next(order), neighbor))
+
+        if reached is None:
+            return []
+
+        path = []
+        current = reached
+        while current is not None:
+            path.append(current)
+            current = came_from[current]
+        path.reverse()
+        return path
+
+    @staticmethod
+    def _cell_heuristic(position, targets):
+        floor_id, x, y = position
+        same_floor = [
+            target for target in targets if target[0] == floor_id
+        ]
+        if not same_floor:
+            return 0
+        return min(abs(x - tx) + abs(y - ty) for _, tx, ty in same_floor)
+
+    def _cell_neighbors(self, position):
+        floor_id, x, y = position
+        for dx, dy in ACTION_DIRECTIONS.values():
+            if dx == 0 and dy == 0:
+                continue
+            nx, ny = x + dx, y + dy
+            if self.world.can_move_to(nx, ny, floor_id):
+                yield floor_id, nx, ny
+
+        floor = self.world.floors[floor_id]
+        if floor.map_grid.get(x, y) != CellType.STAIRS:
+            return
+        entity = SimpleNamespace(floor_id=floor_id, grid_x=x, grid_y=y)
+        arrival = self.world.stair_arrival(entity, "drone")
+        if arrival is not None and self.world.can_move_to(arrival[1], arrival[2], arrival[0]):
+            yield arrival
+
+    def _is_cell_route_passable(self, route):
+        if not route:
+            return False
+        for floor_id, x, y in route:
+            if not self.world.can_move_to(x, y, floor_id):
+                return False
+        for first, second in zip(route, route[1:]):
+            if first[0] == second[0]:
+                if abs(first[1] - second[1]) + abs(first[2] - second[2]) != 1:
+                    return False
+            elif second not in self._cell_neighbors(first):
+                return False
+        return True
+
+    def refresh_cell_routes(self, drones):
+        """Refresh paths from current positions and replan stale cluster routes."""
+        for drone in drones:
+            existing_route = self.cell_routes.get(drone, [])
+            if existing_route and not self._is_cell_route_passable(existing_route):
+                self.replan_route(drone)
+                continue
+            route = self.drone_routes.get(drone, [])
+            if not route:
+                self.cell_routes[drone] = []
+                continue
+            cell_route = self.find_cell_route(drone, route)
+            if not cell_route:
+                self.replan_route(drone)
+            else:
+                self.cell_routes[drone] = cell_route
+        return self.cell_routes
+
+    @staticmethod
+    def action_for_cell_route(drone, route):
+        if not route or route[0] != (drone.floor_id, drone.grid_x, drone.grid_y):
+            return None
+        if len(route) == 1:
+            return Action.STAY
+        next_floor, next_x, next_y = route[1]
+        if next_floor != drone.floor_id:
+            return Action.USE_STAIRS
+        delta = (next_x - drone.grid_x, next_y - drone.grid_y)
+        return next(
+            (action for action, direction in ACTION_DIRECTIONS.items() if direction == delta),
+            None,
+        )
 
     def _is_remaining_route_passable(self, drone_cluster, route):
         if not route or drone_cluster is None:

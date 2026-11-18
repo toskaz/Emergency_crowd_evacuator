@@ -15,6 +15,8 @@ class Simulation:
 
         self.step_count = 0
         self.evacuated_count = 0
+        self.evacuation_history = []
+        self.evacuation_times = []
         self.started = False
         self.prepared = False
 
@@ -24,6 +26,8 @@ class Simulation:
         self.drones.clear()
         self.step_count = 0
         self.evacuated_count = 0
+        self.evacuation_history = [(0, 0)]
+        self.evacuation_times = []
         self.started = False
         self.prepared = False
 
@@ -73,6 +77,9 @@ class Simulation:
 
         self.evacuees[:] = [evacuee for evacuee in self.evacuees if evacuee not in evacuated]
         self.evacuated_count += len(evacuated)
+        self.evacuation_times.extend(
+            [self.step_count + 1] * len(evacuated)
+        )
 
         finished_drones = [drone for drone in self.drones if self.touching_exit(drone)]
         for drone in finished_drones:
@@ -92,3 +99,4 @@ class Simulation:
 
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.step_count += 1
+        self.evacuation_history.append((self.step_count, self.evacuated_count))

@@ -5,7 +5,7 @@ from grids.grid import Grid
 from map.cell import CellType
 
 
-def extract_map_image(image_path, block_size, exit_kernel_size=5, acceptance_threshold=0.40):
+def extract_map_image(image_path, block_size, exit_kernel_size=9, acceptance_threshold=0.40):
     image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise FileNotFoundError(f"Could not load image: {image_path}")
@@ -38,7 +38,8 @@ def _recognize_walls(grid, thresholded_image, block_size, acceptance_threshold):
 
 def _mark_exits_on_grid(grid, kernel_size):
     wall_mask = _get_wall_mask(grid)
-    closed_walls = _close_doors(wall_mask, kernel_size)
+    base_size = max(3, int(kernel_size) | 1)
+    closed_walls = _close_doors(wall_mask, base_size)
     outside_area = _find_outside_area(closed_walls)
     exits = _find_external_openings(wall_mask, closed_walls, outside_area)
 
@@ -73,26 +74,24 @@ def _find_outside_area(closed_walls):
 def _find_external_openings(original_walls, closed_walls, outside_area):
     height, width = original_walls.shape
     exits = []
+    interior_open = (original_walls == 0) & ~outside_area
+    directions = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
     for y in range(height):
         for x in range(width):
             was_empty = original_walls[y, x] == 0
             got_closed = closed_walls[y, x] == 255
-            if was_empty and got_closed and _touches_outside(
-                x, y, outside_area, width, height
-            ):
+            if not (was_empty and got_closed):
+                continue
+
+            neighbors = [
+                (x + dx, y + dy)
+                for dx, dy in directions
+                if 0 <= x + dx < width and 0 <= y + dy < height
+            ]
+            touches_outside = any(outside_area[ny, nx] for nx, ny in neighbors)
+            touches_interior = any(interior_open[ny, nx] for nx, ny in neighbors)
+            if touches_outside and touches_interior:
                 exits.append((x, y))
 
     return exits
-
-
-def _touches_outside(x, y, outside_area, width, height):
-    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-        neighbor_x, neighbor_y = x + dx, y + dy
-        if (
-            0 <= neighbor_x < width
-            and 0 <= neighbor_y < height
-            and outside_area[neighbor_y, neighbor_x]
-        ):
-            return True
-    return False

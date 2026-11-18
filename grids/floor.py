@@ -12,6 +12,7 @@ class Floor:
     def __init__(self, floor_id, map_grid):
         self.id = floor_id
         self.map_grid = map_grid
+        self.base_map_grid = map_grid.copy()
         self.evacuee_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.drone_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.rebuild_map_data()
@@ -30,7 +31,9 @@ class Floor:
         self.temporary_wall_grid = Grid(
             self.map_grid.width, self.map_grid.height, False
         )
-        self.cluster_grid = ClusterGrid(self.map_grid)
+        self.cluster_grid = ClusterGrid(
+            self.map_grid, temporary_wall_grid=self.temporary_wall_grid
+        )
         logger.debug("Clusters generated for floor %d", self.id + 1)
         self.distance_map = None
         self.drone_assignment_grid = Grid(

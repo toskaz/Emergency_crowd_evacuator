@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from controls.action import Action
+from controls.global_coordinator import GlobalCoordinator
 from controls.line_of_sight import can_see
 from map.cell import CellType
 from utils.config import drone_visible_evacuee_target, drone_vision_radius
@@ -144,7 +145,7 @@ class DQNDroneController:
         self.reward_world = None
         self.reward_topology = ()
 
-    def get_actions(self, simulation, routes):
+    def get_actions(self, simulation, routes, cell_routes=None):
         actions = []
 
         for drone in simulation.drones:
@@ -158,12 +159,28 @@ class DQNDroneController:
             route = routes.get(drone, [])
             state, route_ids = self._observe(simulation, drone, route)
             legal_actions = self._legal_actions(simulation, drone)
-            action = self._select_action(state, legal_actions, drone, route_ids, simulation)
+            cell_route = (cell_routes or {}).get(drone)
+            action = (
+                self._route_action(world, drone, cell_route, legal_actions)
+                if cell_route and not self.training
+                else None
+            )
+            if action is None:
+                action = self._select_action(state, legal_actions, drone, route_ids, simulation)
             if self.training:
                 self.record_transition(simulation, drone, state, action, route_ids)
             actions.append(action)
 
         return actions
+
+    @staticmethod
+    def _route_action(world, drone, route, legal_actions):
+        action = GlobalCoordinator.action_for_cell_route(drone, route)
+        if action not in legal_actions:
+            return Action.STAY if action is not None else None
+        if action is Action.USE_STAIRS and world.stair_arrival(drone, "drone") is None:
+            return Action.STAY
+        return action
 
     def _assigned_group(self, simulation, drone):
         return [

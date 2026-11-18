@@ -7,7 +7,7 @@ from map.image_extractor import extract_map_image
 
 class Map_Grid(Grid):
     @classmethod
-    def from_image(cls, image_path, block_size, exit_kernel_size=5, acceptance_threshold=0.40):
+    def from_image(cls, image_path, block_size, exit_kernel_size=9, acceptance_threshold=0.40):
         extracted_grid = extract_map_image(image_path, block_size, exit_kernel_size, acceptance_threshold)
         grid = cls(extracted_grid.width, extracted_grid.height, CellType.EMPTY)
         grid.cells = extracted_grid.cells

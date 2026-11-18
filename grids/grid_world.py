@@ -615,6 +615,8 @@ class Grid_World:
             return False
 
         floor.temporary_wall_grid.set(x, y, enabled)
+        floor.cluster_grid.temporary_wall_grid = floor.temporary_wall_grid
+        floor.cluster_grid.build_adjacent_cluster_pairs()
         self.build_distance_maps()
         return True
 
@@ -628,6 +630,9 @@ class Grid_World:
                 floor.map_grid.width, floor.map_grid.height, False
             )
         if changed:
+            for floor in self.floors.values():
+                floor.cluster_grid.temporary_wall_grid = floor.temporary_wall_grid
+                floor.cluster_grid.build_adjacent_cluster_pairs()
             self.build_distance_maps()
 
     def _get_floor(self, floor_id=None):
@@ -635,6 +640,8 @@ class Grid_World:
 
     def set_map_cell(self, floor_id, x, y, cell_type):
         floor = self.floors[floor_id]
+        if not floor.map_grid.in_bounds(x, y):
+            return False
         if floor.map_grid.get(x, y) == cell_type:
             return False
         floor.map_grid.set(x, y, cell_type)
@@ -646,6 +653,12 @@ class Grid_World:
             return False
         self.rebuild_map_data(self.changed_floor_ids)
         return True
+
+    def restore_base_maps(self):
+        self.changed_floor_ids.update(self.floors)
+        for floor in self.floors.values():
+            floor.map_grid = floor.base_map_grid.copy()
+        self.rebuild_changed_map_data()
 
     def rebuild_simulation_grid(self, evacuees=(), drones=()):
         for floor in self.floors.values():

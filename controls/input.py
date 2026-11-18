@@ -16,6 +16,12 @@ def handle_input(context):
         elif event.type == pygame_gui.UI_BUTTON_PRESSED:
             context.state.handle_ui_event(context, event)
 
+        elif (
+            event.type in (pygame.MOUSEBUTTONUP, pygame.MOUSEMOTION)
+            and getattr(context.state, "tracks_mouse_drag", False)
+        ):
+            context.state.handle_mouse(context, event)
+
         elif not consumed:
             if event.type == pygame.KEYDOWN:
                 context.state.handle_key_event(context, event.key)

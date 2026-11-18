@@ -13,8 +13,7 @@ import pygame
 import pygame_gui
 
 from controls.action import Action
-from controls.action_controller import get_actions
-from editor.editor import handle_map_editor
+from editor.editor import grid_line, handle_map_editor_cell
 from editor.tool import Tool
 from grids.coordinates import pixel_to_grid
 from grids.map_grid import Map_Grid
@@ -89,7 +88,99 @@ def _save_project(context):
     data = context.simulation.grid_world.to_dict()
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+    for floor in context.simulation.grid_world.floors.values():
+        floor.base_map_grid = floor.map_grid.copy()
     logger.info("Project saved to %s", path)
+
+
+def _build_playback_controls(
+    state, program, tool_x, tool_w, playback_y, primary_label, *, step_enabled=True
+):
+    primary = pygame_gui.elements.UIButton(
+        pygame.Rect(tool_x, playback_y, tool_w, 38),
+        primary_label,
+        manager=program.ui_manager,
+        object_id="#btn_start_sim",
+    )
+    state._btn_start_sim = primary
+    state._btn_pause = primary
+    state._btn_step = pygame_gui.elements.UIButton(
+        pygame.Rect(tool_x, playback_y + 44, 120, 34),
+        "+1 Step",
+        manager=program.ui_manager,
+        object_id="#btn_playback",
+    )
+    if not step_enabled:
+        state._btn_step.disable()
+    state._btn_reset = pygame_gui.elements.UIButton(
+        pygame.Rect(tool_x + 128, playback_y + 44, 120, 34),
+        "Reset",
+        manager=program.ui_manager,
+        object_id="#btn_playback",
+    )
+    state._speed_buttons = {}
+    labels = ("0.5x", "0.75x", "1x", "2x", "4x")
+    for index, (speed, label) in enumerate(
+        zip(program.speed_multipliers, labels)
+    ):
+        button = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + 4 + index * 49, playback_y + 84, 44, 26),
+            label,
+            manager=program.ui_manager,
+            object_id=(
+                "#speed_btn_active"
+                if speed == program.speed_multiplier
+                else "#speed_btn"
+            ),
+        )
+        state._speed_buttons[button] = speed
+
+
+def _handle_speed_button(state, program, event):
+    speed = state._speed_buttons.get(event.ui_element)
+    if speed is None:
+        return False
+    program.set_speed_multiplier(speed)
+    state._rebuild_ui(program)
+    return True
+
+
+def _build_overlay_controls(state, program, tool_x, y):
+    labels = (
+        ("show_grid", "Grid (G)"),
+        ("show_clusters", "Clusters (C)"),
+        ("show_drone_routes", "Routes (V)"),
+    )
+    state._overlay_buttons = {}
+    for index, (option, label) in enumerate(labels):
+        button = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x + index * 83, y, 78, 28),
+            label,
+            manager=program.ui_manager,
+            object_id=(
+                "#overlay_btn_active"
+                if getattr(program.view_options, option)
+                else "#overlay_btn"
+            ),
+        )
+        state._overlay_buttons[button] = option
+
+
+def _handle_overlay_button(state, program, event):
+    option = getattr(state, "_overlay_buttons", {}).get(event.ui_element)
+    if option is None:
+        return False
+    setattr(program.view_options, option, not getattr(program.view_options, option))
+    state._rebuild_ui(program)
+    return True
+
+
+def _step_once(state, program):
+    program.step_simulation(keep_paused=True)
+    if state.name == "overview":
+        program.transition_to(SimulationPausedState())
+    else:
+        state._rebuild_ui(program)
 
 
 class ProgramState:
@@ -187,18 +278,26 @@ class ProgramState:
             return
         if key == pygame.K_g:
             program.view_options.show_grid = not program.view_options.show_grid
+            self._refresh_overlay_controls(program)
             return
         if self.render_options_enabled:
             if key == pygame.K_c:
                 program.view_options.show_clusters = not program.view_options.show_clusters
+                self._refresh_overlay_controls(program)
                 return
             if key == pygame.K_b:
                 program.view_options.show_cluster_connections = not program.view_options.show_cluster_connections
                 return
             if key == pygame.K_v:
                 program.view_options.show_drone_routes = not program.view_options.show_drone_routes
+                self._refresh_overlay_controls(program)
                 return
         self.handle_key(program, key)
+
+    def _refresh_overlay_controls(self, program):
+        rebuild = getattr(self, "_rebuild_ui", None)
+        if rebuild is not None:
+            rebuild(program)
 
 
 class MainMenuState(ProgramState):
@@ -656,6 +755,8 @@ class CalibrationState(ProgramState):
 
 class EditorState(ProgramState):
     name = "editor"
+    tracks_mouse_drag = True
+    render_options_enabled = True
     can_pan = True
     floor_switch_enabled = True
     key_bindings = (
@@ -667,6 +768,8 @@ class EditorState(ProgramState):
 
     def __init__(self):
         self.selected_tool = Tool.WALL
+        self.active_mouse_button = None
+        self.last_grid_position = None
         self._floor_tabs = {}
         self._save_btn = None
         self._menu_btn = None
@@ -683,11 +786,11 @@ class EditorState(ProgramState):
         self._btn_start_sim = None
         self._btn_pause = None
         self._btn_reset = None
+        self._overlay_buttons = {}
 
     def enter(self, program):
-        program.view_options.show_clusters = False
-        program.view_options.show_cluster_connections = False
-        program.view_options.show_drone_routes = False
+        self.active_mouse_button = None
+        self.last_grid_position = None
         self._rebuild_ui(program)
 
     def on_floor_changed(self, program):
@@ -762,9 +865,10 @@ class EditorState(ProgramState):
         )
 
         tool_x = sidebar_x + 16
+        _build_overlay_controls(self, program, tool_x, 248)
         tool_w = 248
-        tool_h = 40
-        y = 248
+        tool_h = 32
+        y = 282
 
         self._btn_wall = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
@@ -772,42 +876,41 @@ class EditorState(ProgramState):
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.WALL else "#tool_btn",
         )
-        y += 44
+        y += 36
         self._btn_evacuee = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
             "Evacuee" if self.selected_tool == Tool.EVACUEE else "Evacuee",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.EVACUEE else "#tool_btn",
         )
-        y += 44
+        y += 36
         self._btn_exit = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
             "Exit" if self.selected_tool == Tool.EXIT else "Exit",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.EXIT else "#tool_btn",
         )
-        y += 44
+        y += 36
         self._btn_drone = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
             "Agent" if self.selected_tool == Tool.DRONE else "Agent",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.DRONE else "#tool_btn",
         )
-        y += 44
+        y += 36
         self._btn_stairs = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, tool_h),
             "Stairs" if self.selected_tool == Tool.STAIRS else "Stairs",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.STAIRS else "#tool_btn",
         )
-        y += 48
+        y += 40
         self._save_project_btn = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, tool_w, 34),
             "Save Project",
             manager=program.ui_manager,
             object_id="#btn_secondary",
         )
-
         playback_y = 564
         self._btn_start_sim = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, playback_y, tool_w, 38),
@@ -829,11 +932,15 @@ class EditorState(ProgramState):
         )
 
     def exit(self, program):
+        self.active_mouse_button = None
+        self.last_grid_position = None
         program.simulation.grid_world.rebuild_changed_map_data()
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
 
     def handle_ui_event(self, program, event):
+        if _handle_overlay_button(self, program, event):
+            return
         if event.ui_element in (self._save_btn, self._save_project_btn):
             _save_project(program)
         elif event.ui_element == self._menu_btn:
@@ -847,8 +954,7 @@ class EditorState(ProgramState):
             program.link_stairs_mode = True
             program.transition_to(OverviewState())
         elif event.ui_element == self._nav_sim:
-            program.simulation.prepare()
-            program.plan_drone_routes()
+            program.reset_simulation(clear_link_mode=True)
             program.transition_to(SimulationPausedState())
         elif event.ui_element == self._btn_start_sim:
             program.transition_to(SimulationRunningState())
@@ -868,8 +974,9 @@ class EditorState(ProgramState):
             self.selected_tool = Tool.STAIRS
             self._rebuild_ui(program)
         elif event.ui_element == self._btn_reset:
-            if program.simulation:
-                program.simulation.prepare()
+            program.reset_simulation(
+                restore_base_map=True, clear_link_mode=True
+            )
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -890,15 +997,60 @@ class EditorState(ProgramState):
             _save_project(program)
 
     def handle_mouse(self, program, event):
-        screen_w, screen_h = program.screen.get_size()
-        if event.pos[0] >= screen_w - SIDEBAR_WIDTH or event.pos[1] < TOP_BAR_HEIGHT:
+        if event.type == pygame.MOUSEBUTTONUP:
+            self.active_mouse_button = None
+            self.last_grid_position = None
             return
-        handle_map_editor(
-            program.simulation,
-            event.pos,
-            event.button,
-            self.selected_tool,
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button not in (1, 3):
+                return
+            if not self._is_canvas_position(program, event.pos):
+                self.active_mouse_button = None
+                self.last_grid_position = None
+                return
+            self.active_mouse_button = event.button
+            self.last_grid_position = None
+        elif event.type == pygame.MOUSEMOTION:
+            if self.active_mouse_button is None:
+                return
+        else:
+            return
+
+        self._paint_to_position(program, event.pos)
+
+    def _is_canvas_position(self, program, position):
+        screen_w, screen_h = program.screen.get_size()
+        return (
+            0 <= position[0] < screen_w - SIDEBAR_WIDTH
+            and TOP_BAR_HEIGHT <= position[1] < screen_h
         )
+
+    def _paint_to_position(self, program, position):
+        if not self._is_canvas_position(program, position):
+            self.last_grid_position = None
+            return
+
+        world = program.simulation.grid_world
+        grid_position = pixel_to_grid(*position)
+        if not world.map_grid.in_bounds(*grid_position):
+            self.last_grid_position = None
+            return
+
+        start = self.last_grid_position or grid_position
+        clusters_changed = False
+        for grid_x, grid_y in grid_line(start, grid_position):
+            clusters_changed |= handle_map_editor_cell(
+                program.simulation,
+                grid_x,
+                grid_y,
+                self.active_mouse_button,
+                self.selected_tool,
+                rebuild_clusters=False,
+            )
+        if clusters_changed:
+            world.rebuild_changed_map_data()
+        self.last_grid_position = grid_position
 
     def render(self, program):
         program.window.draw_editor(program, self.selected_tool, self.key_bindings)
@@ -910,6 +1062,7 @@ class OverviewState(ProgramState):
     floor_switch_enabled = True
     can_pan = True
     key_bindings = (
+        "Space: Start/Pause",
         "Arrow keys: Pan canvas",
         "L: Stair link mode",
         "H: Toggle assignments",
@@ -932,14 +1085,12 @@ class OverviewState(ProgramState):
         self._btn_start_sim = None
         self._btn_reset = None
         self._btn_pause = None
+        self._btn_step = None
+        self._speed_buttons = {}
+        self._overlay_buttons = {}
 
     def enter(self, program):
-        program.simulation.grid_world.clear_temporary_walls()
-        program.simulation.prepare()
-        program.drone_routes = {}
-        program.drone_controller.reset()
-        program.rl_evacuee_controller.reset()
-        program.plan_drone_routes()
+        program.reset_simulation()
         self._rebuild_ui(program)
 
     def on_floor_changed(self, program):
@@ -1031,25 +1182,16 @@ class OverviewState(ProgramState):
             manager=program.ui_manager,
             object_id="#btn_secondary",
         )
+        _build_overlay_controls(self, program, tool_x, 340)
 
         playback_y = 564
-        self._btn_start_sim = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y, tool_w, 38),
-            "Start Simulation",
-            manager=program.ui_manager,
-            object_id="#btn_start_sim",
-        )
-        self._btn_pause = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y + 44, 120, 34),
-            "Pause",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
-        )
-        self._btn_reset = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x + 128, playback_y + 44, 120, 34),
-            "Reset",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
+        _build_playback_controls(
+            self,
+            program,
+            tool_x,
+            tool_w,
+            playback_y,
+            "Resume" if program.simulation.step_count > 0 else "Start",
         )
 
     def exit(self, program):
@@ -1058,6 +1200,10 @@ class OverviewState(ProgramState):
             program.ui_manager.clear_and_reset()
 
     def handle_ui_event(self, program, event):
+        if _handle_overlay_button(self, program, event):
+            return
+        if _handle_speed_button(self, program, event):
+            return
         if event.ui_element in (self._save_btn, self._save_project_btn):
             _save_project(program)
         elif event.ui_element == self._menu_btn:
@@ -1074,14 +1220,14 @@ class OverviewState(ProgramState):
             program.simulation.grid_world.stair_link_notice = None
             self._rebuild_ui(program)
         elif event.ui_element == self._nav_sim:
-            program.simulation.prepare()
-            program.plan_drone_routes()
+            program.reset_simulation(clear_link_mode=True)
             program.transition_to(SimulationPausedState())
         elif event.ui_element == self._btn_start_sim:
             program.transition_to(SimulationRunningState())
+        elif event.ui_element == self._btn_step:
+            _step_once(self, program)
         elif event.ui_element == self._btn_reset:
-            program.simulation.prepare()
-            program.plan_drone_routes()
+            program.reset_simulation()
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -1099,7 +1245,9 @@ class OverviewState(ProgramState):
 
 
     def handle_key(self, program, key):
-        if key == pygame.K_l:
+        if key == pygame.K_SPACE:
+            program.transition_to(SimulationRunningState())
+        elif key == pygame.K_l:
             program.link_stairs_mode = not program.link_stairs_mode
             program.simulation.grid_world.pending_stair_endpoint = None
             program.simulation.grid_world.stair_link_error = None
@@ -1169,7 +1317,7 @@ class SimulationRunningState(ProgramState):
     floor_switch_enabled = True
 
     key_bindings = (
-        "P: Pause",
+        "Space / P: Pause",
         "X: Finish",
         "WASD: Evacuees",
         "T: Stairs",
@@ -1189,6 +1337,9 @@ class SimulationRunningState(ProgramState):
         self._btn_pause = None
         self._btn_reset = None
         self._btn_start_sim = None
+        self._btn_step = None
+        self._speed_buttons = {}
+        self._overlay_buttons = {}
 
     def enter(self, program):
         self._rebuild_ui(program)
@@ -1264,36 +1415,27 @@ class SimulationRunningState(ProgramState):
         tool_x = sidebar_x + 16
         tool_w = 248
         playback_y = 564
-
-        self._btn_start_sim = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y, tool_w, 38),
-            "Start Simulation",
-            manager=program.ui_manager,
-            object_id="#btn_start_sim",
-        )
-        self._btn_pause = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y + 44, 120, 34),
+        _build_playback_controls(
+            self,
+            program,
+            tool_x,
+            tool_w,
+            playback_y,
             "Pause",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
+            step_enabled=False,
         )
-        self._btn_reset = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x + 128, playback_y + 44, 120, 34),
-            "Reset",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
-        )
+        _build_overlay_controls(self, program, tool_x, 302)
 
 
     def handle_ui_event(self, program, event):
+        if _handle_overlay_button(self, program, event):
+            return
+        if _handle_speed_button(self, program, event):
+            return
         if event.ui_element == self._save_btn:
             _save_project(program)
-        elif event.ui_element == self._btn_start_sim:
-            if not program.simulation.started:
-                program.start_simulation()
-            else:
-               program.simulation.paused = False
-               self._rebuild_ui(program)
+        elif event.ui_element == self._btn_pause:
+            program.transition_to(SimulationPausedState())
         elif event.ui_element == self._menu_btn:
             program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
             if program.ui_manager:
@@ -1303,15 +1445,9 @@ class SimulationRunningState(ProgramState):
             program.transition_to(EditorState())
         elif event.ui_element == self._nav_link:
             program.transition_to(OverviewState())
-        elif event.ui_element == self._btn_pause:
+        elif event.ui_element == self._btn_reset:
+            program.reset_simulation(clear_link_mode=True)
             program.transition_to(SimulationPausedState())
-        elif event.ui_element == self._btn_reset:
-            program.simulation.prepare()
-            program.plan_drone_routes()
-            program.transition_to(OverviewState())
-        elif event.ui_element == self._btn_reset:
-            program.link_stairs_mode = False
-            program.transition_to(OverviewState())
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -1328,7 +1464,7 @@ class SimulationRunningState(ProgramState):
                     break
 
     def handle_key(self, program, key):
-        if key == pygame.K_p:
+        if key in (pygame.K_p, pygame.K_SPACE):
             program.transition_to(SimulationPausedState())
         elif key == pygame.K_x:
             program.transition_to(ResultsState())
@@ -1348,25 +1484,7 @@ class SimulationRunningState(ProgramState):
             program.simulation_options.action = Action.USE_STAIRS
 
     def update(self, program):
-        options = program.simulation_options
-        if options.rl_evacuees:
-            evacuee_actions = program.rl_evacuee_controller.get_actions(program.simulation)
-        else:
-            evacuee_actions = get_actions(program.simulation.evacuees, options.action)
-
-        if options.autonomous_drones:
-            drone_actions = program.drone_controller.get_actions(
-                program.simulation,
-                program.drone_routes,
-            )
-        else:
-            drone_actions = get_actions(program.simulation.drones, options.action)
-
-        program.simulation.step(evacuee_actions, drone_actions)
-        if options.action is Action.USE_STAIRS:
-            options.action = Action.STAY
-        if options.autonomous_drones:
-            program.drone_controller.learn(program.simulation, program.drone_routes)
+        program.step_simulation()
 
     def exit(self, program):
         if program.ui_manager is not None:
@@ -1378,7 +1496,8 @@ class SimulationPausedState(ProgramState):
     render_options_enabled = True
     floor_switch_enabled = True
     key_bindings = (
-        "P: Resume",
+        "Space / P: Resume",
+        "Right / .: +1 Step",
         "M: Place hazards (temp walls)",
         "C/B/V: Overlays",
         "G: Grid",
@@ -1396,6 +1515,9 @@ class SimulationPausedState(ProgramState):
         self._btn_resume = None
         self._btn_reset = None
         self._btn_start_sim = None
+        self._btn_step = None
+        self._speed_buttons = {}
+        self._overlay_buttons = {}
 
     def enter(self, program):
         self._rebuild_ui(program)
@@ -1480,28 +1602,23 @@ class SimulationPausedState(ProgramState):
             manager=program.ui_manager,
             object_id="#tool_btn",
         )
+        _build_overlay_controls(self, program, tool_x, 302)
 
         playback_y = 564
-        self._btn_start_sim = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y, tool_w, 38),
-            "Start Simulation",
-            manager=program.ui_manager,
-            object_id="#btn_start_sim",
-        )
-        self._btn_pause = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, playback_y + 44, 120, 34),
-            "Pause",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
-        )
-        self._btn_reset = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x + 128, playback_y + 44, 120, 34),
-            "Reset",
-            manager=program.ui_manager,
-            object_id="#btn_playback",
+        _build_playback_controls(
+            self,
+            program,
+            tool_x,
+            tool_w,
+            playback_y,
+            "Resume" if program.simulation.step_count > 0 else "Start",
         )
 
     def handle_ui_event(self, program, event):
+        if _handle_overlay_button(self, program, event):
+            return
+        if _handle_speed_button(self, program, event):
+            return
         if event.ui_element == self._save_btn:
             _save_project(program)
         elif event.ui_element == self._menu_btn:
@@ -1517,9 +1634,11 @@ class SimulationPausedState(ProgramState):
             program.transition_to(SimulationEditorState())
         elif event.ui_element in (self._btn_resume, self._btn_start_sim):
             program.transition_to(SimulationRunningState())
+        elif event.ui_element == self._btn_step:
+            _step_once(self, program)
         elif event.ui_element == self._btn_reset:
-            program.link_stairs_mode = False
-            program.transition_to(OverviewState())
+            program.reset_simulation(clear_link_mode=True)
+            self._rebuild_ui(program)
         elif event.ui_element == self._btn_add_floor:
             path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
             if path:
@@ -1536,8 +1655,10 @@ class SimulationPausedState(ProgramState):
                     break
 
     def handle_key(self, program, key):
-        if key == pygame.K_p:
+        if key in (pygame.K_p, pygame.K_SPACE):
             program.transition_to(SimulationRunningState())
+        elif key in (pygame.K_RIGHT, pygame.K_PERIOD):
+            _step_once(self, program)
         elif key == pygame.K_m:
             program.transition_to(SimulationEditorState())
 
@@ -1631,7 +1752,10 @@ class ResultsState(ProgramState):
             program.ui_manager.clear_and_reset()
 
     def handle_ui_event(self, program, event):
-        if event.ui_element == self._btn_reset or event.ui_element == self._nav_link:
+        if event.ui_element == self._btn_reset:
+            program.reset_simulation(clear_link_mode=True)
+            program.transition_to(SimulationPausedState())
+        elif event.ui_element == self._nav_link:
             program.link_stairs_mode = False
             program.transition_to(OverviewState())
         elif event.ui_element == self._nav_edit:

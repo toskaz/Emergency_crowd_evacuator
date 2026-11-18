@@ -6,3 +6,7 @@ torch
 gymnasium
 pygame_gui
 tqdm
+fastapi
+uvicorn
+websockets
+python-multipart
