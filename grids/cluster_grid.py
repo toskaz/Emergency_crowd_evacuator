@@ -178,7 +178,7 @@ class ClusterGrid:
     def fill(self, grid, x, y, origin_x, origin_y, cluster_id):
         pending = [(x, y)]
         neighbors = (
-            (1, 0), (-1, 0), (0, 1), (0, -1) #diagonal neighbors only if orthogonal path found
+            (1, 0), (-1, 0), (0, 1), (0, -1)
         )
 
         while pending:
@@ -205,6 +205,9 @@ class ClusterGrid:
 
             for dx, dy in neighbors:
                 pending.append((current_x + dx, current_y + dy))
+
+    def in_bounds(self, x, y):
+        return self.grid.in_bounds(x, y)
 
     def get(self, x, y):
         return self.grid.get(x, y)

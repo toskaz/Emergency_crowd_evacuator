@@ -33,6 +33,7 @@ class ViewOptions:
     show_cluster_connections: bool = True
     show_drone_routes: bool = True
     show_assignments: bool = False
+    show_heatmap: bool = False
 
 
 @dataclass
@@ -46,7 +47,7 @@ class ProgramContext:
     def __init__(self):
         pygame.init()
 
-        self.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+        self.screen = pygame.display.set_mode(MENU_WINDOW_SIZE, pygame.RESIZABLE)
         pygame.display.set_caption("Emergency Crowd Evacuator")
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
         self.ui_manager = pygame_gui.UIManager(MENU_WINDOW_SIZE, theme_path=theme_arg)
@@ -104,7 +105,7 @@ class ProgramContext:
 
         screen_width, screen_height = self._calculate_screen_size(map_grid)
 
-        self.screen = pygame.display.set_mode((screen_width, screen_height))
+        self.screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
         self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
 
@@ -121,7 +122,7 @@ class ProgramContext:
 
         map_grid = self.simulation.grid_world.map_grid
         screen_width, screen_height = self._calculate_screen_size(map_grid)
-        self.screen = pygame.display.set_mode((screen_width, screen_height))
+        self.screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
         self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
 
@@ -139,12 +140,26 @@ class ProgramContext:
         screen_width, screen_height = self._calculate_screen_size(map_grid)
         current_w, current_h = self.screen.get_size()
         if (current_w, current_h) != (screen_width, screen_height):
-            self.screen = pygame.display.set_mode((screen_width, screen_height))
+            self.screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
             if self.ui_manager is not None:
                 self.ui_manager.set_window_resolution((screen_width, screen_height))
         self._center_camera(map_grid, screen_width, screen_height)
         if self.window is not None:
             self.window.screen = self.screen
+
+    def handle_resize(self, width, height):
+        target_size = (max(800, width), max(600, height))
+        self.screen = pygame.display.set_mode(target_size, pygame.RESIZABLE)
+        if self.ui_manager is not None:
+            self.ui_manager.set_window_resolution(target_size)
+        if self.window is not None:
+            self.window.screen = self.screen
+        if self.simulation is not None and hasattr(self.simulation, 'grid_world') and self.simulation.grid_world is not None:
+            self._center_camera(self.simulation.grid_world.map_grid, target_size[0], target_size[1])
+        if hasattr(self.state, 'handle_resize'):
+            self.state.handle_resize(self, target_size)
+        elif hasattr(self.state, '_rebuild_ui'):
+            self.state._rebuild_ui(self)
 
     def transition_to(self, state):
         logger.debug("Application state changed: %s -> %s", self.state.name, state.name)
@@ -153,12 +168,16 @@ class ProgramContext:
         self.state.enter(self)
 
     def plan_drone_routes(self):
+        if self.coordinator is None or not self.simulation:
+            return
         self.drone_routes = self.coordinator.plan_initial_routes(
             self.simulation.drones
         )
 
     def replan_drone_routes_after_hazard(self):
-        self.drone_routes, _ = self.coordinator.on_environment_changed(
+        if self.coordinator is None or not self.simulation:
+            return
+        self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
             self.simulation.drones
         )
         self.drone_controller.invalidate()

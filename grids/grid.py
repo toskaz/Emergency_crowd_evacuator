@@ -13,9 +13,13 @@ class Grid:
         return 0 <= x < self.width and 0 <= y < self.height
 
     def get(self, x, y):
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return None
         return self.cells[y][x]
 
     def set(self, x, y, value):
+        if not (0 <= x < self.width and 0 <= y < self.height):
+            return
         self.cells[y][x] = value
 
     def copy(self):

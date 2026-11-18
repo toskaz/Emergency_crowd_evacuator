@@ -17,6 +17,8 @@ class Simulation:
         self.evacuated_count = 0
         self.started = False
         self.prepared = False
+        self.last_editor_error = None
+        self.last_editor_error_timer = 0
 
     def prepare(self):
         self.grid_world.rebuild_changed_map_data()
@@ -26,6 +28,8 @@ class Simulation:
         self.evacuated_count = 0
         self.started = False
         self.prepared = False
+        self.last_editor_error = None
+        self.last_editor_error_timer = 0
 
         for floor in self.grid_world.floors.values():
             floor.evacuee_occupancy_grid = Grid(
@@ -33,6 +37,9 @@ class Simulation:
             )
             floor.drone_occupancy_grid = Grid(
                 floor.map_grid.width, floor.map_grid.height, None
+            )
+            floor.heatmap_grid = Grid(
+                floor.map_grid.width, floor.map_grid.height, 0
             )
         for floor_id, floor in self.grid_world.floors.items():
             for y in range(floor.map_grid.height):
@@ -82,6 +89,12 @@ class Simulation:
     def step(self, evacuee_actions, drone_actions=None):
         if not self.started:
             self.start()
+
+        for evacuee in self.evacuees:
+            fl = self.grid_world.floors.get(evacuee.floor_id)
+            if fl and hasattr(fl, "heatmap_grid"):
+                cur_v = fl.heatmap_grid.get(evacuee.grid_x, evacuee.grid_y) or 0
+                fl.heatmap_grid.set(evacuee.grid_x, evacuee.grid_y, cur_v + 1)
 
         self.grid_world.step_evacuees(self.evacuees, evacuee_actions)
         self.remove_evacuated()

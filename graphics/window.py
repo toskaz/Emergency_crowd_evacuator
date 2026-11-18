@@ -1,19 +1,18 @@
-from asyncio import selector_events
-from pathlib import Path
-from asyncio import selector_events
 import pygame
 from graphics.colors import Color
 from grids.cluster import ClusterType
 from graphics.renderer import (
     draw_map,
     draw_ui,
-    draw_key_bindings,
     draw_navigation,
     draw_clusters,
     draw_cluster_edges,
     draw_temporary_walls,
     draw_stair_highlights,
     draw_assignment_groups,
+    draw_map_scale,
+    draw_legend,
+    draw_heatmap,
 )
 
 
@@ -24,7 +23,6 @@ class Window:
 
         self.screen = pygame.display.get_surface()
         if self.screen is None:
-            from utils.config import drawing_size
             self.screen = pygame.display.set_mode((1280, 800))
 
         self.title_font = pygame.font.Font(None, 20)
@@ -65,13 +63,18 @@ class Window:
 
         self.screen.set_clip(canvas_rect)
         self._draw_grid(context, grid)
-        if context.simulation and context.simulation.started:
+        if context.simulation and (context.simulation.started or getattr(context.state, "name", "") in ("simulation_paused", "simulation_editor")):
             draw_temporary_walls(
                 self.screen, context.simulation.grid_world.temporary_wall_grid
             )
         if context.state.render_options_enabled:
             self._draw_overlays(context)
         self._draw_ui(context, key_bindings, selected_tool)
+        legend_top_y = 96
+        legend_h = draw_legend(self.screen, self.tiny_font, top_left=(14, legend_top_y))
+        active_floor = context.simulation.grid_world.active_floor if context.simulation and context.simulation.grid_world else None
+        cell_m = getattr(active_floor, 'cell_size_m', 0.6) if active_floor else 0.6
+        draw_map_scale(self.screen, self.tiny_font, top_left=(14, legend_top_y + legend_h + 6), cell_size_m=cell_m)
         self.screen.set_clip(None)
 
         self._draw_figma_chrome(context, selected_tool)
@@ -82,6 +85,8 @@ class Window:
     def _draw_overlays(self, context):
         world = context.simulation.grid_world
         options = context.view_options
+        if getattr(options, "show_heatmap", False):
+            draw_heatmap(self.screen, world.active_floor)
         if options.show_cluster_connections:
             draw_cluster_edges(self.screen, world.cluster_grid)
         if options.show_clusters:
@@ -151,56 +156,109 @@ class Window:
         pygame.draw.rect(screen, Color.SIDEBAR_BG.value, (sidebar_x, 48, 280, screen_h - 48))
         pygame.draw.line(screen, Color.DIVIDER.value, (sidebar_x, 48), (sidebar_x, screen_h), 1)
 
-        stats_header = self.tiny_font.render("SIMULATION STATS", True, Color.TEXT_MUTED.value)
-        screen.blit(stats_header, (sidebar_x + 16, 62))
+        active_floor = context.simulation.grid_world.active_floor if context.simulation and context.simulation.grid_world else None
+        cell_m = getattr(active_floor, 'cell_size_m', 0.6) if active_floor else 0.6
+        if cell_m >= 1.0:
+            val_scale = self.font.render(f"1 cell = {cell_m:.2f} m", True, (240, 240, 240))
+        else:
+            val_scale = self.font.render(f"1 cell = {round(cell_m * 100)} cm", True, (240, 240, 240))
 
-        card_rect = pygame.Rect(sidebar_x + 16, 84, 248, 118)
-        pygame.draw.rect(screen, Color.CARD_BG.value, card_rect, border_radius=7)
-        pygame.draw.rect(screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
+        if context.state.name in ("editor", "overview"):
+            scale_header = self.tiny_font.render("SCALE", True, Color.TEXT_MUTED.value)
+            screen.blit(scale_header, (sidebar_x + 16, 60))
+            card_rect = pygame.Rect(sidebar_x + 16, 80, 248, 42)
+            pygame.draw.rect(screen, Color.CARD_BG.value, card_rect, border_radius=7)
+            pygame.draw.rect(screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
+            lbl_scale = self.font.render("Scale:", True, (170, 170, 170))
+            screen.blit(lbl_scale, (card_rect.x + 14, card_rect.y + 13))
+            screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, card_rect.y + 13))
 
-        evacuated = context.simulation.evacuated_count if context.simulation else 0
-        total = evacuated + len(context.simulation.evacuees) if context.simulation else 0
-        step = context.simulation.step_count if context.simulation else 0
+            divider_y = 134
+            pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, divider_y), (screen_w - 16, divider_y), 1)
 
-        r1_y = card_rect.y + 11
-        lbl_step = self.font.render("Step:", True, (170, 170, 170))
-        val_step = self.font.render(str(step), True, (240, 240, 240))
-        screen.blit(lbl_step, (card_rect.x + 14, r1_y))
-        screen.blit(val_step, (card_rect.right - val_step.get_width() - 14, r1_y))
+            if context.state.name == "editor":
+                tools_header = self.tiny_font.render("TOOLS", True, (181, 181, 181))
+                screen.blit(tools_header, (sidebar_x + 16, divider_y + 8))
+                mode_label = self.tiny_font.render("Edit Mode", True, (141, 141, 141))
+                screen.blit(mode_label, (screen_w - 16 - mode_label.get_width(), divider_y + 8))
 
-        pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, r1_y + 26), (card_rect.right - 14, r1_y + 26), 1)
+                act_div_y = 372
+                pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, act_div_y), (screen_w - 16, act_div_y), 1)
+                actions_header = self.tiny_font.render("ACTIONS", True, (181, 181, 181))
+                screen.blit(actions_header, (sidebar_x + 16, act_div_y + 8))
+            elif context.state.name == "overview":
+                self._draw_sidebar_stairs_info(context, sidebar_x, screen_w)
+                opt_div_y = 320
+                pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, opt_div_y), (screen_w - 16, opt_div_y), 1)
+                view_header = self.tiny_font.render("VIEW OPTIONS", True, (181, 181, 181))
+                screen.blit(view_header, (sidebar_x + 16, opt_div_y + 8))
 
-        r2_y = r1_y + 36
-        lbl_evac = self.font.render("Evacuated:", True, (170, 170, 170))
-        val_evac = self.font.render(f"{evacuated} / {total}", True, (240, 240, 240))
-        screen.blit(lbl_evac, (card_rect.x + 14, r2_y))
-        screen.blit(val_evac, (card_rect.right - val_evac.get_width() - 14, r2_y))
+        else:
+            stats_header = self.tiny_font.render("SIMULATION STATS", True, Color.TEXT_MUTED.value)
+            screen.blit(stats_header, (sidebar_x + 16, 60))
+            evacuated = context.simulation.evacuated_count if context.simulation else 0
+            total = evacuated + len(context.simulation.evacuees) if context.simulation else 0
+            step = context.simulation.step_count if context.simulation else 0
+            pct = (evacuated / total) if total > 0 else 0.0
 
-        pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, r2_y + 26), (card_rect.right - 14, r2_y + 26), 1)
+            top_pad = 11
+            r1_y = 80 + top_pad
+            lbl_step = self.font.render("Step:", True, (170, 170, 170))
+            val_step = self.font.render(str(step), True, (240, 240, 240))
+            r2_y = r1_y + 32
+            lbl_evac = self.font.render("Evacuated:", True, (170, 170, 170))
+            val_evac = self.font.render(f"{evacuated} / {total} ({pct * 100:.0f}%)", True, (240, 240, 240))
+            r3_y = r2_y + 39
+            lbl_scale = self.font.render("Scale:", True, (170, 170, 170))
+            card_h = (r3_y + lbl_scale.get_height() + top_pad) - 80
+            card_rect = pygame.Rect(sidebar_x + 16, 80, 248, card_h)
+            pygame.draw.rect(screen, Color.CARD_BG.value, card_rect, border_radius=7)
+            pygame.draw.rect(screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
 
-        r3_y = r2_y + 36
-        lbl_scale = self.font.render("Scale:", True, (170, 170, 170))
-        val_scale = self.font.render("1 cell = 60 cm", True, (240, 240, 240))
-        screen.blit(lbl_scale, (card_rect.x + 14, r3_y))
-        screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, r3_y))
+            screen.blit(lbl_step, (card_rect.x + 14, r1_y))
+            screen.blit(val_step, (card_rect.right - val_step.get_width() - 14, r1_y))
 
-        pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, 216), (screen_w - 16, 216), 1)
+            pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, r1_y + 24), (card_rect.right - 14, r1_y + 24), 1)
 
-        tools_header = self.tiny_font.render("TOOLS", True, (181, 181, 181))
-        screen.blit(tools_header, (sidebar_x + 16, 226))
+            screen.blit(lbl_evac, (card_rect.x + 14, r2_y))
+            screen.blit(val_evac, (card_rect.right - val_evac.get_width() - 14, r2_y))
 
-        mode_name = "Edit Mode" if context.state.name == "editor" else context.state.name.replace("_", " ").title()
-        mode_label = self.tiny_font.render(mode_name, True, (141, 141, 141))
-        screen.blit(mode_label, (screen_w - 16 - mode_label.get_width(), 226))
+            bar_rect = pygame.Rect(card_rect.x + 14, r2_y + 17, card_rect.width - 28, 6)
+            pygame.draw.rect(screen, (38, 38, 38), bar_rect, border_radius=3)
+            fill_w = int(bar_rect.width * pct)
+            if fill_w > 0:
+                pygame.draw.rect(screen, (16, 185, 129), (bar_rect.x, bar_rect.y, fill_w, bar_rect.height), border_radius=3)
 
-        if context.state.name == "overview":
-            self._draw_sidebar_stairs_info(context, sidebar_x, screen_w)
+            pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, r2_y + 31), (card_rect.right - 14, r2_y + 31), 1)
 
-        playback_div_y = 538
-        pygame.draw.line(screen, (56, 56, 56), (sidebar_x + 16, playback_div_y), (screen_w - 16, playback_div_y), 1)
+            screen.blit(lbl_scale, (card_rect.x + 14, r3_y))
+            screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, r3_y))
 
-        playback_header = self.tiny_font.render("SIMULATION PLAYBACK", True, (170, 170, 170))
-        screen.blit(playback_header, (sidebar_x + 16, playback_div_y + 12))
+            if context.state.name == "simulation_paused":
+                tools_div_y = 216
+                pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, tools_div_y), (screen_w - 16, tools_div_y), 1)
+                tools_header = self.tiny_font.render("TOOLS", True, (181, 181, 181))
+                screen.blit(tools_header, (sidebar_x + 16, tools_div_y + 8))
+
+                opt_div_y = 292
+                pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, opt_div_y), (screen_w - 16, opt_div_y), 1)
+                view_header = self.tiny_font.render("VIEW OPTIONS", True, (181, 181, 181))
+                screen.blit(view_header, (sidebar_x + 16, opt_div_y + 8))
+
+                pb_div_y = 428
+                pygame.draw.line(screen, (56, 56, 56), (sidebar_x + 16, pb_div_y), (screen_w - 16, pb_div_y), 1)
+                pb_header = self.tiny_font.render("SIMULATION PLAYBACK", True, (170, 170, 170))
+                screen.blit(pb_header, (sidebar_x + 16, pb_div_y + 8))
+            elif context.state.name == "simulation_running":
+                opt_div_y = 216
+                pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, opt_div_y), (screen_w - 16, opt_div_y), 1)
+                view_header = self.tiny_font.render("VIEW OPTIONS", True, (181, 181, 181))
+                screen.blit(view_header, (sidebar_x + 16, opt_div_y + 8))
+
+                pb_div_y = 352
+                pygame.draw.line(screen, (56, 56, 56), (sidebar_x + 16, pb_div_y), (screen_w - 16, pb_div_y), 1)
+                pb_header = self.tiny_font.render("SIMULATION PLAYBACK", True, (170, 170, 170))
+                screen.blit(pb_header, (sidebar_x + 16, pb_div_y + 8))
 
     def _draw_sidebar_stairs_info(self, context, sidebar_x, screen_w):
         if not context.simulation or not context.simulation.grid_world:
@@ -211,12 +269,10 @@ class Window:
         floor = world.active_floor
         floor_id = world.active_floor_id
 
-        section_y = 392
-        pygame.draw.line(self.screen, (52, 52, 52), (sidebar_x + 16, section_y), (screen_w - 16, section_y), 1)
         header = self.tiny_font.render(f"STAIRS (FLOOR {floor_id + 1})", True, (181, 181, 181))
-        self.screen.blit(header, (sidebar_x + 16, section_y + 10))
+        self.screen.blit(header, (sidebar_x + 16, 142))
 
-        card_rect = pygame.Rect(sidebar_x + 16, section_y + 28, 248, 102)
+        card_rect = pygame.Rect(sidebar_x + 16, 164, 248, 102)
         pygame.draw.rect(self.screen, Color.CARD_BG.value, card_rect, border_radius=7)
         pygame.draw.rect(self.screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
 

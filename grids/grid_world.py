@@ -55,6 +55,7 @@ class Grid_World:
                 "floor_id": floor_id,
                 "width": floor.map_grid.width,
                 "height": floor.map_grid.height,
+                "cell_size_m": getattr(floor, "cell_size_m", 0.6),
                 "cells": cells,
             })
 
@@ -87,11 +88,15 @@ class Grid_World:
             floor_id = floor_data["floor_id"]
             width = floor_data["width"]
             height = floor_data["height"]
+            cell_size_m = floor_data.get("cell_size_m", 0.6)
             map_grid = Map_Grid(width, height, CellType.EMPTY)
+            map_grid.cell_size_m = cell_size_m
             for y, row in enumerate(floor_data["cells"]):
                 for x, cell_value in enumerate(row):
                     map_grid.set(x, y, CellType(cell_value))
-            self.floors[floor_id] = Floor(floor_id, map_grid)
+            floor = Floor(floor_id, map_grid)
+            floor.cell_size_m = cell_size_m
+            self.floors[floor_id] = floor
 
         if self.floors:
             self.active_floor_id = 0
@@ -409,6 +414,8 @@ class Grid_World:
 
     def stair_cluster_at(self, floor_id, x, y):
         floor = self.floors[floor_id]
+        if not floor.cluster_grid.in_bounds(x, y):
+            return None
         cluster_id = floor.cluster_grid.get(x, y)
         if cluster_id is None or cluster_id < 0:
             return None
@@ -435,7 +442,7 @@ class Grid_World:
         target_floor_id = target_node[0]
         occupancy = self._occupancy_grid(target_floor_id, entity_type)
         distances = self.floors[target_floor_id].distance_map
-        reserved = set(reserved) #occupancy grid is not enough here
+        reserved = set(reserved)
 
         candidates = sorted(
             target_cluster.cells,
