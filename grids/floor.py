@@ -9,10 +9,11 @@ logger = logging.getLogger(__name__)
 
 
 class Floor:
-    def __init__(self, floor_id, map_grid):
+    def __init__(self, floor_id, map_grid, floor_height_m=3.0):
         self.id = floor_id
         self.map_grid = map_grid
         self.cell_size_m = getattr(map_grid, 'cell_size_m', 0.6)
+        self.floor_height_m = float(floor_height_m)
         self.evacuee_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.drone_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.rebuild_map_data()

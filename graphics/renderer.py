@@ -118,7 +118,7 @@ def draw_map_scale(screen, font, top_left=None, bottom_left=None, cell_size_m=0.
     line_px = int(cells_count * config.drawing_size)
 
     box_w = max(line_px + 40, 154)
-    box_h = 48
+    box_h = 50
 
     if top_left is not None:
         x, y = top_left
@@ -137,7 +137,7 @@ def draw_map_scale(screen, font, top_left=None, bottom_left=None, cell_size_m=0.
         scale_title = f"SCALE: 1 cell = {cell_size_m:.2f}m"
     else:
         scale_title = f"SCALE: 1 cell = {cell_size_m * 100:.0f}cm"
-    title_lbl = font.render(scale_title, True, (170, 170, 170))
+    title_lbl = font.render(scale_title, True, (220, 220, 220))
     screen.blit(title_lbl, (x + 14, y + 5))
 
     bar_x = x + 14
@@ -162,15 +162,15 @@ def draw_map_scale(screen, font, top_left=None, bottom_left=None, cell_size_m=0.
             return f"{v:.1f}m"
         return f"{v:.2f}m"
 
-    t0 = font.render("0", True, (210, 210, 210))
-    t_end = font.render(_fmt_dist(real_dist_m), True, (210, 210, 210))
+    t0 = font.render("0", True, (220, 220, 220))
+    t_end = font.render(_fmt_dist(real_dist_m), True, (220, 220, 220))
 
     screen.blit(t0, (bar_x - t0.get_width() // 2, bar_y + bar_h + 3))
     screen.blit(t_end, (bar_x + line_px - t_end.get_width() // 2, bar_y + bar_h + 3))
 
     if line_px >= 90:
         mid_val = real_dist_m / 2
-        t_mid = font.render(_fmt_dist(mid_val), True, (170, 170, 170))
+        t_mid = font.render(_fmt_dist(mid_val), True, (180, 180, 180))
         screen.blit(t_mid, (bar_x + mid_px - t_mid.get_width() // 2, bar_y + bar_h + 3))
 
     return box_h
@@ -183,27 +183,66 @@ def draw_heatmap(screen, floor):
     overlay = pygame.Surface((screen.get_width(), screen.get_height()), pygame.SRCALPHA)
     d_size = config.drawing_size
 
+    max_val = 1
+    for row in grid.cells:
+        for val in row:
+            if val and val > max_val:
+                max_val = val
+
+    r, g, b = Color.HEATMAP.value
+
     for y in range(grid.height):
         for x in range(grid.width):
             val = grid.get(x, y)
             if not val or val <= 0:
                 continue
             px, py = grid_to_pixel(x, y)
-            if val < 5:
-                color = (34, 197, 94, 90)
-            elif val < 15:
-                color = (59, 130, 246, 120)
-            elif val < 35:
-                color = (234, 179, 8, 150)
-            elif val < 70:
-                color = (249, 115, 22, 180)
-            else:
-                color = (239, 68, 68, 220)
-            pygame.draw.rect(overlay, color, (px, py, d_size, d_size))
-            if val >= 35:
-                pygame.draw.rect(overlay, (255, 255, 255, 80), (px, py, d_size, d_size), 1)
+            ratio = min(1.0, val / max(5, max_val))
+            alpha = int(40 + 175 * (ratio ** 0.65))
+            pygame.draw.rect(overlay, (r, g, b, alpha), (px, py, d_size, d_size))
 
     screen.blit(overlay, (0, 0))
+
+
+def draw_heatmap_legend(screen, font, top_left=None, bottom_left=None):
+    box_w = 154
+    box_h = 52
+    if top_left is not None:
+        x, y = top_left
+    elif bottom_left is not None:
+        x, bl_y = bottom_left
+        y = bl_y - box_h
+    else:
+        x, y = 14, 304
+
+    bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+    bg.fill((20, 20, 20, 220))
+    pygame.draw.rect(bg, (55, 55, 55, 220), bg.get_rect(), 1, border_radius=6)
+    screen.blit(bg, (x, y))
+
+    title = font.render("HEATMAP", True, (170, 170, 170))
+    screen.blit(title, (x + 12, y + 6))
+
+    bar_x = x + 12
+    bar_y = y + 23
+    bar_w = box_w - 24
+    bar_h = 8
+
+    r, g, b = Color.HEATMAP.value
+    grad_surf = pygame.Surface((bar_w, bar_h), pygame.SRCALPHA)
+    for col in range(bar_w):
+        col_ratio = col / max(1, bar_w - 1)
+        col_alpha = int(40 + 175 * (col_ratio ** 0.65))
+        pygame.draw.line(grad_surf, (r, g, b, col_alpha), (col, 0), (col, bar_h))
+    screen.blit(grad_surf, (bar_x, bar_y))
+    pygame.draw.rect(screen, (80, 80, 80), (bar_x, bar_y, bar_w, bar_h), 1)
+
+    lbl_low = font.render("Low", True, (210, 210, 210))
+    lbl_high = font.render("High traffic", True, (210, 210, 210))
+    screen.blit(lbl_low, (bar_x, bar_y + bar_h + 3))
+    screen.blit(lbl_high, (bar_x + bar_w - lbl_high.get_width(), bar_y + bar_h + 3))
+
+    return box_h
 
 
 def draw_legend(screen, font, top_left=None, bottom_left=None):
@@ -217,9 +256,9 @@ def draw_legend(screen, font, top_left=None, bottom_left=None):
     ]
 
     pad_x, pad_y = 12, 8
-    item_h = 18
+    item_h = 20
     total_h = len(legend_items) * item_h + pad_y * 2 + 14
-    total_w = 146
+    total_w = 154
 
     if top_left is not None:
         x, y = top_left
@@ -230,11 +269,11 @@ def draw_legend(screen, font, top_left=None, bottom_left=None):
         x, y = 14, 96
 
     bg = pygame.Surface((total_w, total_h), pygame.SRCALPHA)
-    bg.fill((22, 22, 22, 210))
-    pygame.draw.rect(bg, (55, 55, 55, 210), bg.get_rect(), 1, border_radius=6)
+    bg.fill((22, 22, 22, 215))
+    pygame.draw.rect(bg, (55, 55, 55, 215), bg.get_rect(), 1, border_radius=6)
     screen.blit(bg, (x, y))
 
-    title = font.render("LEGEND", True, (160, 160, 160))
+    title = font.render("LEGEND", True, (170, 170, 170))
     screen.blit(title, (x + pad_x, y + 6))
 
     cur_y = y + 24
@@ -253,11 +292,76 @@ def draw_legend(screen, font, top_left=None, bottom_left=None):
             pygame.draw.rect(screen, color, (x + pad_x, center_y - 5, 11, 11), border_radius=2)
             pygame.draw.rect(screen, (80, 80, 80), (x + pad_x, center_y - 5, 11, 11), 1, border_radius=2)
 
-        txt = font.render(name, True, (220, 220, 220))
+        txt = font.render(name, True, (225, 225, 225))
         screen.blit(txt, (x + pad_x + 20, cur_y + 1))
         cur_y += item_h
 
     return total_h
+
+
+def draw_building_elevation(screen, font, small_font, world, top_left=None, bottom_left=None, min_top_y=None):
+    if world is None or len(world.floors) <= 1:
+        return 0
+
+    num_floors = len(world.floors)
+    box_w = 168
+    floor_row_h = 32
+    box_h = 34 + (num_floors - 1) * floor_row_h + 18
+
+    if bottom_left is not None:
+        x, bl_y = bottom_left
+        y = bl_y - box_h
+    elif top_left is not None:
+        x, y = top_left
+    else:
+        x = 14
+        y = screen.get_height() - box_h - 14
+        if min_top_y is not None and y < min_top_y:
+            y = min_top_y
+
+    bg = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+    bg.fill((20, 20, 20, 225))
+    pygame.draw.rect(bg, (55, 55, 55, 225), bg.get_rect(), 1, border_radius=7)
+    screen.blit(bg, (x, y))
+
+    title = font.render("BUILDING PROFILE", True, (170, 170, 170))
+    screen.blit(title, (x + 12, y + 8))
+
+    active_id = getattr(world, "active_floor_id", 0)
+
+    line_start_x = x + 38
+    line_end_x = x + box_w - 14
+    base_line_y = y + box_h - 18
+
+    for f_idx in range(num_floors):
+        f_id = f_idx
+        line_y = base_line_y - f_idx * floor_row_h
+        is_active = (f_id == active_id)
+
+        if is_active:
+            pygame.draw.line(screen, (16, 185, 129), (line_start_x, line_y), (line_end_x, line_y), 3)
+            lbl = font.render(f"F{f_id + 1}", True, (16, 185, 129))
+            screen.blit(lbl, (x + 12, line_y - lbl.get_height() // 2))
+        else:
+            pygame.draw.line(screen, (90, 90, 90), (line_start_x, line_y), (line_end_x, line_y), 1)
+            lbl = small_font.render(f"F{f_id + 1}", True, (160, 160, 160))
+            screen.blit(lbl, (x + 12, line_y - lbl.get_height() // 2))
+
+        if f_idx < num_floors - 1:
+            mid_y = line_y - floor_row_h // 2
+            floors_map = getattr(world, "floors", {})
+            if isinstance(floors_map, dict):
+                floor_obj = floors_map.get(f_idx + 1)
+            elif isinstance(floors_map, (list, tuple)) and f_idx + 1 < len(floors_map):
+                floor_obj = floors_map[f_idx + 1]
+            else:
+                floor_obj = None
+            h_m = getattr(floor_obj, "floor_height_m", 3.0) if floor_obj else 3.0
+            h_str = f"{h_m:.1f} m"
+            h_lbl = small_font.render(h_str, True, (190, 190, 190))
+            screen.blit(h_lbl, (line_start_x + (line_end_x - line_start_x - h_lbl.get_width()) // 2, mid_y - h_lbl.get_height() // 2))
+
+    return box_h
 
 
 def draw_key_bindings(screen, font, key_bindings):

@@ -73,6 +73,8 @@ class QLearningFollowController:
         return [self.decide(simulation, evacuee, leaders.get(evacuee)) for evacuee in simulation.evacuees]
 
     def decide(self, simulation, evacuee, leader):
+        if getattr(evacuee, "in_stair_transit", False):
+            return Action.STAY
         world = simulation.grid_world
         if exit_distance(world, evacuee) <= EXIT_REACH:
             return step_towards_exit(world, evacuee)

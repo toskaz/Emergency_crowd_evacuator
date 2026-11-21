@@ -29,6 +29,7 @@ class Grid_World:
     def __init__(self):
         self.floors = {}
         self.active_floor_id = 0
+        self.same_height_for_all = True
         self.pending_stair_endpoint = None
         self.stair_link_error = None
         self.stair_link_notice = None
@@ -38,9 +39,9 @@ class Grid_World:
         if self.floors:
             self.rebuild_map_data()
 
-    def add_floor_from_map(self, map_grid):
+    def add_floor_from_map(self, map_grid, floor_height_m=3.0):
         floor_id = len(self.floors)
-        self.floors[floor_id] = Floor(floor_id, map_grid)
+        self.floors[floor_id] = Floor(floor_id, map_grid, floor_height_m=floor_height_m)
         self.active_floor_id = floor_id if floor_id == 0 else self.active_floor_id
         self.rebuild_map_data()
 
@@ -56,6 +57,7 @@ class Grid_World:
                 "width": floor.map_grid.width,
                 "height": floor.map_grid.height,
                 "cell_size_m": getattr(floor, "cell_size_m", 0.6),
+                "floor_height_m": getattr(floor, "floor_height_m", 3.0),
                 "cells": cells,
             })
 
@@ -73,10 +75,16 @@ class Grid_World:
                 seen_links.add(pair)
                 stair_links.append([list(source_node), list(target_node)])
 
-        return {"cluster_version": CLUSTERING_VERSION, "floors": floors, "stair_links": stair_links}
+        return {
+            "cluster_version": CLUSTERING_VERSION,
+            "same_height_for_all": getattr(self, "same_height_for_all", True),
+            "floors": floors,
+            "stair_links": stair_links,
+        }
 
     def from_dict(self, data):
         self.floors = {}
+        self.same_height_for_all = data.get("same_height_for_all", True)
         self.pending_stair_endpoint = None
         self.stair_link_error = None
         self.stair_link_notice = None
@@ -89,12 +97,13 @@ class Grid_World:
             width = floor_data["width"]
             height = floor_data["height"]
             cell_size_m = floor_data.get("cell_size_m", 0.6)
+            floor_height_m = floor_data.get("floor_height_m", 3.0)
             map_grid = Map_Grid(width, height, CellType.EMPTY)
             map_grid.cell_size_m = cell_size_m
             for y, row in enumerate(floor_data["cells"]):
                 for x, cell_value in enumerate(row):
                     map_grid.set(x, y, CellType(cell_value))
-            floor = Floor(floor_id, map_grid)
+            floor = Floor(floor_id, map_grid, floor_height_m=floor_height_m)
             floor.cell_size_m = cell_size_m
             self.floors[floor_id] = floor
 
@@ -654,15 +663,48 @@ class Grid_World:
         self.rebuild_map_data(self.changed_floor_ids)
         return True
 
+    def set_floor_height(self, floor_id, height_m, same_for_all=None):
+        val = max(1.0, min(20.0, float(height_m)))
+        if same_for_all is None:
+            same_for_all = getattr(self, "same_height_for_all", True)
+        self.same_height_for_all = bool(same_for_all)
+        if same_for_all:
+            for f in self.floors.values():
+                f.floor_height_m = val
+        elif floor_id in self.floors:
+            self.floors[floor_id].floor_height_m = val
+
+    def clear_people_and_drones(self, floor_id, simulation=None):
+        if floor_id not in self.floors:
+            return
+        floor = self.floors[floor_id]
+        for y in range(floor.map_grid.height):
+            for x in range(floor.map_grid.width):
+                if floor.map_grid.get(x, y) in (CellType.EVACUEE, CellType.DRONE):
+                    floor.map_grid.set(x, y, CellType.EMPTY)
+        floor.evacuee_occupancy_grid = Grid(floor.map_grid.width, floor.map_grid.height, None)
+        floor.drone_occupancy_grid = Grid(floor.map_grid.width, floor.map_grid.height, None)
+        if simulation is not None:
+            simulation.evacuees[:] = [e for e in simulation.evacuees if getattr(e, "floor_id", 0) != floor_id]
+            simulation.drones[:] = [d for d in simulation.drones if getattr(d, "floor_id", 0) != floor_id]
+        self.changed_floor_ids.add(floor_id)
+        self.rebuild_changed_map_data()
+        if simulation is not None:
+            self.rebuild_simulation_grid(simulation.evacuees, simulation.drones)
+
     def rebuild_simulation_grid(self, evacuees=(), drones=()):
         for floor in self.floors.values():
             floor.simulation_grid = floor.wall_and_exit_grid.copy()
 
         for evacuee in evacuees:
+            if getattr(evacuee, "in_stair_transit", False):
+                continue
             floor = self.floors[getattr(evacuee, "floor_id", 0)]
             floor.simulation_grid.set(evacuee.grid_x, evacuee.grid_y, CellType.EVACUEE)
 
         for drone in drones:
+            if getattr(drone, "in_stair_transit", False):
+                continue
             floor = self.floors[getattr(drone, "floor_id", 0)]
             floor.simulation_grid.set(drone.grid_x, drone.grid_y, CellType.DRONE)
 
@@ -687,11 +729,27 @@ class Grid_World:
         destinations = set()
 
         for entity, action in zip(entities, actions):
+            if getattr(entity, "in_stair_transit", False):
+                continue
+
             if action is Action.USE_STAIRS:
-                destination = self.stair_arrival(entity, entity_type, destinations)
-                if destination is not None:
-                    destinations.add(destination)
-                    desired_moves[entity] = destination
+                floor_id = getattr(entity, "floor_id", 0)
+                source_node = self.stair_cluster_at(floor_id, entity.grid_x, entity.grid_y)
+                if source_node is not None:
+                    source_cluster = self._get_stair_cluster(source_node)
+                    if source_cluster is not None and source_cluster.linked_to is not None:
+                        target_floor_id = source_cluster.linked_to[0]
+                        low_f = min(floor_id, target_floor_id)
+                        high_f = max(floor_id, target_floor_id)
+                        if high_f > low_f:
+                            h = sum(getattr(self.floors.get(f), "floor_height_m", 3.0) for f in range(low_f + 1, high_f + 1))
+                        else:
+                            h = 0.0
+                        delay = max(2, int(round(h * 1.5))) if entity_type == "drone" else max(3, int(round(h * 3.0)))
+                        entity.in_stair_transit = True
+                        entity.stair_steps_left = delay
+                        entity.stair_target_node = source_cluster.linked_to
+                        self._occupancy_grid(floor_id, entity_type).set(entity.grid_x, entity.grid_y, None)
                 continue
 
             delta_x, delta_y = ACTION_DIRECTIONS[action]
@@ -763,6 +821,40 @@ class Grid_World:
         return self._step_entities(drones, actions, "drone")
 
     def _step_entities(self, entities, actions, entity_type):
+        for entity in entities:
+            if getattr(entity, "in_stair_transit", False):
+                entity.stair_steps_left -= 1
+                if entity.stair_steps_left <= 0:
+                    target_node = getattr(entity, "stair_target_node", None)
+                    target_cluster = self._get_stair_cluster(target_node) if target_node else None
+                    if target_cluster is not None:
+                        target_floor_id = target_node[0]
+                        occupancy = self._occupancy_grid(target_floor_id, entity_type)
+                        distances = self.floors[target_floor_id].distance_map
+                        candidates = sorted(
+                            target_cluster.cells,
+                            key=lambda c: (
+                                distances[c[1]][c[0]] if distances is not None else float("inf"),
+                                abs(c[0] - entity.grid_x) + abs(c[1] - entity.grid_y),
+                            )
+                        )
+                        landed = False
+                        for cx, cy in candidates:
+                            if occupancy.get(cx, cy) is None:
+                                entity.floor_id = target_floor_id
+                                entity.grid_x = cx
+                                entity.grid_y = cy
+                                entity.in_stair_transit = False
+                                entity.stair_steps_left = 0
+                                entity.stair_target_node = None
+                                occupancy.set(cx, cy, entity)
+                                landed = True
+                                break
+                        if not landed:
+                            entity.stair_steps_left = 1
+                    else:
+                        entity.in_stair_transit = False
+
         desired_moves = self.get_desired_moves(entities, actions, entity_type)
         moves = self.resolve_moves(entities, desired_moves, entity_type)
         self.apply_moves(moves, entity_type)

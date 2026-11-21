@@ -17,6 +17,8 @@ class ScriptedDroneController:
         return [self.choose_action(simulation, drone) for drone in simulation.drones]
 
     def choose_action(self, simulation, drone):
+        if getattr(drone, "in_stair_transit", False):
+            return Action.STAY
         world = simulation.grid_world
         if world.is_exit(drone.grid_x, drone.grid_y, drone.floor_id):
             return Action.STAY
