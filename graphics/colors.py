@@ -22,6 +22,7 @@ class Color(Enum):
     TEXT_MUTED = (163, 163, 163)
     TEXT_PRIMARY = (242, 242, 242)
     ACCENT_BLUE = (22, 101, 52)
+    HEATMAP = (130, 45, 215)
 
 def assignment_color(drone_id):
     if drone_id is None:

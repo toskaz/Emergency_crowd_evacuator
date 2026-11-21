@@ -13,6 +13,8 @@ from graphics.renderer import (
     draw_map_scale,
     draw_legend,
     draw_heatmap,
+    draw_heatmap_legend,
+    draw_building_elevation,
 )
 
 
@@ -25,10 +27,10 @@ class Window:
         if self.screen is None:
             self.screen = pygame.display.set_mode((1280, 800))
 
-        self.title_font = pygame.font.Font(None, 20)
-        self.font = pygame.font.Font(None, 18)
-        self.small_font = pygame.font.Font(None, 16)
-        self.tiny_font = pygame.font.Font(None, 14)
+        self.title_font = pygame.font.Font(None, 24)
+        self.font = pygame.font.Font(None, 20)
+        self.small_font = pygame.font.Font(None, 18)
+        self.tiny_font = pygame.font.Font(None, 15)
         self.is_open = True
 
     def draw_editor(self, context, selected_tool, key_bindings):
@@ -74,7 +76,22 @@ class Window:
         legend_h = draw_legend(self.screen, self.tiny_font, top_left=(14, legend_top_y))
         active_floor = context.simulation.grid_world.active_floor if context.simulation and context.simulation.grid_world else None
         cell_m = getattr(active_floor, 'cell_size_m', 0.6) if active_floor else 0.6
-        draw_map_scale(self.screen, self.tiny_font, top_left=(14, legend_top_y + legend_h + 6), cell_size_m=cell_m)
+        scale_top_y = legend_top_y + legend_h + 6
+        scale_h = draw_map_scale(self.screen, self.tiny_font, top_left=(14, scale_top_y), cell_size_m=cell_m)
+
+        next_stack_y = scale_top_y + scale_h + 6
+        if getattr(context.view_options, "show_heatmap", False):
+            heat_h = draw_heatmap_legend(self.screen, self.tiny_font, top_left=(14, next_stack_y))
+            next_stack_y += heat_h + 6
+
+        if context.simulation and context.simulation.grid_world:
+            draw_building_elevation(
+                self.screen,
+                self.font,
+                self.small_font,
+                context.simulation.grid_world,
+                min_top_y=next_stack_y + 8,
+            )
         self.screen.set_clip(None)
 
         self._draw_figma_chrome(context, selected_tool)
@@ -137,15 +154,17 @@ class Window:
             (mark_rect.centerx - 4, mark_rect.centery + 5)
         ])
 
-        title_surf = self.title_font.render("Emergency Crowd Evacuator", True, Color.TEXT_PRIMARY.value)
+        title_text = "Emergency Crowd Evacuator" if screen_w >= 1050 else "ARIADNE"
+        title_surf = self.title_font.render(title_text, True, Color.TEXT_PRIMARY.value)
         screen.blit(title_surf, (48, 15))
-
-        workflow_surf = self.tiny_font.render("WORKFLOW", True, Color.TEXT_MUTED.value)
-        screen.blit(workflow_surf, (screen_w - 530 - 75, 18))
 
         switcher_w = 510
         switcher_x = screen_w - switcher_w - 16
         pygame.draw.rect(screen, (21, 21, 21), (switcher_x, 7, switcher_w, 34), border_radius=6)
+
+        if screen_w >= 1150:
+            workflow_surf = self.tiny_font.render("WORKFLOW", True, Color.TEXT_MUTED.value)
+            screen.blit(workflow_surf, (switcher_x - workflow_surf.get_width() - 12, 18))
 
         pygame.draw.rect(screen, Color.FLOORTABS_BG.value, (0, 48, sidebar_x, 40))
         pygame.draw.line(screen, Color.DIVIDER.value, (0, 87), (sidebar_x, 87), 1)
@@ -234,7 +253,7 @@ class Window:
             screen.blit(lbl_scale, (card_rect.x + 14, r3_y))
             screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, r3_y))
 
-            if context.state.name == "simulation_paused":
+            if context.state.name in ("simulation_paused", "simulation_running"):
                 tools_div_y = 216
                 pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, tools_div_y), (screen_w - 16, tools_div_y), 1)
                 tools_header = self.tiny_font.render("TOOLS", True, (181, 181, 181))
@@ -246,16 +265,6 @@ class Window:
                 screen.blit(view_header, (sidebar_x + 16, opt_div_y + 8))
 
                 pb_div_y = 428
-                pygame.draw.line(screen, (56, 56, 56), (sidebar_x + 16, pb_div_y), (screen_w - 16, pb_div_y), 1)
-                pb_header = self.tiny_font.render("SIMULATION PLAYBACK", True, (170, 170, 170))
-                screen.blit(pb_header, (sidebar_x + 16, pb_div_y + 8))
-            elif context.state.name == "simulation_running":
-                opt_div_y = 216
-                pygame.draw.line(screen, (52, 52, 52), (sidebar_x + 16, opt_div_y), (screen_w - 16, opt_div_y), 1)
-                view_header = self.tiny_font.render("VIEW OPTIONS", True, (181, 181, 181))
-                screen.blit(view_header, (sidebar_x + 16, opt_div_y + 8))
-
-                pb_div_y = 352
                 pygame.draw.line(screen, (56, 56, 56), (sidebar_x + 16, pb_div_y), (screen_w - 16, pb_div_y), 1)
                 pb_header = self.tiny_font.render("SIMULATION PLAYBACK", True, (170, 170, 170))
                 screen.blit(pb_header, (sidebar_x + 16, pb_div_y + 8))

@@ -17,6 +17,7 @@ from controls.action_controller import get_actions
 from editor.editor import handle_map_editor
 from editor.tool import Tool
 from graphics.colors import Color
+from graphics.renderer import draw_building_elevation
 from grids.coordinates import pixel_to_grid
 from grids.map_grid import Map_Grid
 from map.cell import CellType
@@ -411,7 +412,7 @@ class MainMenuState(ProgramState):
 
 
 class FloorCalibrationData:
-    def __init__(self, image_path, block_size=25, acceptance_threshold=0.40, px_per_m=None):
+    def __init__(self, image_path, block_size=25, acceptance_threshold=0.40, px_per_m=None, floor_height_m=3.0):
         self.image_path = image_path
         self.raw_image = pygame.image.load(image_path).convert()
         self.img_w, self.img_h = self.raw_image.get_size()
@@ -439,6 +440,7 @@ class FloorCalibrationData:
         self.disp_w = 0
         self.disp_h = 0
         self.is_added_to_simulation = False
+        self.floor_height_m = float(floor_height_m)
 
     def update_cell_size(self):
         if getattr(self, "px_per_m", 0) > 0:
@@ -472,6 +474,12 @@ class CalibrationState(ProgramState):
         self._scale_btn_cancel = None
         self._btn_lock_grid = None
         self._btn_toggle_exits = None
+        self._btn_floor_height = None
+        self._height_window = None
+        self._height_entry = None
+        self._height_same_all_btn = None
+        self._height_btn_apply = None
+        self._height_btn_cancel = None
         self._generate_button = None
         self._btn_back = None
         self._btn_load_project = None
@@ -490,22 +498,21 @@ class CalibrationState(ProgramState):
 
         if not program.calibrated_floors and not new_path:
             logger.warning("No image path provided for calibration; returning to main menu")
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager is not None:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
             return
 
-        self.screen_size = CALIBRATION_WINDOW_SIZE
-        program.screen = pygame.display.set_mode(self.screen_size, pygame.RESIZABLE)
+        self.screen_size = program.screen.get_size()
         if program.ui_manager is not None:
             program.ui_manager.set_window_resolution(self.screen_size)
             program.ui_manager.clear_and_reset()
 
-        self.title_font = pygame.font.Font(None, 20)
-        self.font = pygame.font.Font(None, 18)
-        self.small_font = pygame.font.Font(None, 16)
-        self.tiny_font = pygame.font.Font(None, 14)
+        self.title_font = pygame.font.Font(None, 24)
+        self.font = pygame.font.Font(None, 20)
+        self.small_font = pygame.font.Font(None, 18)
+        self.tiny_font = pygame.font.Font(None, 15)
 
         self.sidebar_width = SIDEBAR_WIDTH
         self.top_nav_height = 48
@@ -560,11 +567,18 @@ class CalibrationState(ProgramState):
             cur_bs = self.floors[0].block_size if (self.lock_grid_size and self.floors) else 25
             cur_sens = self.floors[-1].acceptance_threshold if self.floors else 0.40
             cur_px = self.floors[0].px_per_m if (self.lock_grid_size and self.floors) else None
+            def_h = 3.0
+            if getattr(program, "same_height_for_all", True):
+                if self.floors:
+                    def_h = getattr(self.floors[0], "floor_height_m", 3.0)
+                elif program.simulation and program.simulation.grid_world and program.simulation.grid_world.floors:
+                    def_h = getattr(program.simulation.grid_world.floors[0], "floor_height_m", 3.0)
             new_fl = FloorCalibrationData(
                 new_path,
                 block_size=cur_bs,
                 acceptance_threshold=cur_sens,
                 px_per_m=cur_px,
+                floor_height_m=def_h,
             )
             self._init_floor_fit(new_fl)
             self.floors.append(new_fl)
@@ -574,6 +588,7 @@ class CalibrationState(ProgramState):
                 new_path,
                 block_size=25,
                 acceptance_threshold=0.40,
+                floor_height_m=3.0,
             )
             self._init_floor_fit(first_floor)
             self.floors.append(first_floor)
@@ -583,6 +598,12 @@ class CalibrationState(ProgramState):
 
         self._build_ui(program)
         self._recompute_detection()
+
+        total_floors = len(self.floors)
+        if program.simulation and program.simulation.grid_world:
+            total_floors = max(total_floors, len(program.simulation.grid_world.floors))
+        if total_floors > 1 and new_path:
+            self._show_height_dialog(program)
 
     @property
     def active_floor(self):
@@ -740,11 +761,92 @@ class CalibrationState(ProgramState):
             object_id="#tool_btn_selected" if self.lock_grid_size else "#tool_btn",
         )
 
+        cur_h = getattr(cur, "floor_height_m", 3.0) if cur else 3.0
+        active_idx = self.active_floor_index
+        self._btn_floor_height = None
+        if active_idx > 0:
+            f_num = active_idx + 1
+            f_prev = active_idx
+            self._btn_floor_height = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(sb_x + 16, 512, 248, 34),
+                text=f"Height (Floor {f_prev}–{f_num}): {cur_h:.1f}m",
+                manager=mgr,
+                object_id="#btn_secondary",
+            )
+
         self._generate_button = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect(sb_x + 16, self.screen_size[1] - 58, 248, 42),
             text="Open in Editor",
             manager=mgr,
             object_id="#btn_start_sim",
+        )
+
+    def _show_height_dialog(self, program):
+        if getattr(self, "_height_window", None) is not None:
+            self._height_window.kill()
+            self._height_window = None
+
+        screen_w, screen_h = program.screen.get_size()
+        win_w = 340
+        win_h = 230
+        win_x = max(20, (screen_w - SIDEBAR_WIDTH - win_w) // 2)
+        win_y = max(20, (screen_h - win_h) // 2)
+
+        f_num = max(2, self.active_floor_index + 1)
+        f_prev = f_num - 1
+
+        self._height_window = pygame_gui.elements.UIWindow(
+            rect=pygame.Rect(win_x, win_y, win_w, win_h),
+            manager=program.ui_manager,
+            window_display_title=f"Set Height (Floor {f_prev}–{f_num})",
+            object_id="#scale_window",
+        )
+        cur = self.active_floor
+        same = getattr(program, "same_height_for_all", True)
+        if same and self.floors:
+            cur_h = getattr(self.floors[0], "floor_height_m", 3.0)
+        else:
+            cur_h = getattr(cur, "floor_height_m", 3.0) if cur else 3.0
+
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(16, 10, win_w - 32, 22),
+            text=f"Height between Floor {f_prev} and Floor {f_num} (m):",
+            manager=program.ui_manager,
+            container=self._height_window,
+        )
+        self._height_entry = pygame_gui.elements.UITextEntryLine(
+            relative_rect=pygame.Rect(16, 34, win_w - 32, 30),
+            manager=program.ui_manager,
+            container=self._height_window,
+            initial_text=f"{cur_h:.1f}",
+        )
+        self._height_info_lbl = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(16, 68, win_w - 32, 20),
+            text=f"~{round(cur_h / 0.17)} stair steps (standard 17cm rise)",
+            manager=program.ui_manager,
+            container=self._height_window,
+        )
+        self._height_same_all_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(16, 94, win_w - 32, 30),
+            text="Same height for all floors: ON" if same else "Same height for all floors: OFF",
+            manager=program.ui_manager,
+            container=self._height_window,
+            object_id="#tool_btn_selected" if same else "#tool_btn",
+        )
+        btn_w = (win_w - 40) // 2
+        self._height_btn_apply = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(16, 136, btn_w, 32),
+            text="Apply",
+            manager=program.ui_manager,
+            container=self._height_window,
+            object_id="#btn_start_sim",
+        )
+        self._height_btn_cancel = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(24 + btn_w, 136, btn_w, 32),
+            text="Cancel",
+            manager=program.ui_manager,
+            container=self._height_window,
+            object_id="#menu_button",
         )
 
     def _recompute_detection(self):
@@ -922,6 +1024,19 @@ class CalibrationState(ProgramState):
             (zoom_pill_rect.centerx - zoom_txt.get_width() // 2, zoom_pill_rect.centery - zoom_txt.get_height() // 2),
         )
 
+        if len(self.floors) > 1:
+            cal_world = type("BuildingProfileData", (), {
+                "floors": {i: f for i, f in enumerate(self.floors)},
+                "active_floor_id": self.active_floor_index,
+            })()
+            draw_building_elevation(
+                screen,
+                self.font,
+                self.small_font,
+                cal_world,
+                min_top_y=170,
+            )
+
         pygame.draw.rect(screen, Color.TOPNAV_BG.value, (0, 0, screen_w, self.top_nav_height))
         pygame.draw.line(screen, Color.DIVIDER.value, (0, 47), (screen_w, 47), 1)
 
@@ -933,8 +1048,9 @@ class CalibrationState(ProgramState):
             (mark_rect.centerx - 4, mark_rect.centery + 5)
         ])
 
+        cal_title = "New Project - Floorplan Calibration" if screen_w >= 1050 else "Floorplan Calibration"
         title_surf = self.title_font.render(
-            "New Project - Floorplan Calibration", True, Color.TEXT_PRIMARY.value
+            cal_title, True, Color.TEXT_PRIMARY.value
         )
         screen.blit(title_surf, (48, 15))
 
@@ -946,9 +1062,6 @@ class CalibrationState(ProgramState):
 
         pygame.draw.rect(screen, Color.FLOORTABS_BG.value, (0, 48, self.canvas_rect.width, self.tabs_height))
         pygame.draw.line(screen, Color.DIVIDER.value, (0, 87), (self.canvas_rect.width, 87), 1)
-
-        floor_plan_surf = self.tiny_font.render("FLOOR PLAN", True, Color.TEXT_MUTED.value)
-        screen.blit(floor_plan_surf, (self.canvas_rect.width - 260, 62))
 
         if cur:
             file_name = Path(cur.image_path).name if cur.image_path else "floorplan"
@@ -1137,13 +1250,24 @@ class CalibrationState(ProgramState):
                     )
                 fl.update_cell_size()
                 grid.cell_size_m = fl.cell_size_m
+                grid.floor_height_m = getattr(fl, "floor_height_m", 3.0)
                 if first:
                     program.initialize_world(grid)
+                    if program.simulation and program.simulation.grid_world.floors:
+                        program.simulation.grid_world.floors[0].floor_height_m = getattr(fl, "floor_height_m", 3.0)
                     first = False
                 else:
-                    program.simulation.grid_world.add_floor_from_map(grid)
+                    new_id = len(program.simulation.grid_world.floors)
+                    program.simulation.grid_world.add_floor_from_map(grid, floor_height_m=getattr(fl, "floor_height_m", 3.0))
+                    if new_id in program.simulation.grid_world.floors:
+                        program.simulation.grid_world.floors[new_id].floor_height_m = getattr(fl, "floor_height_m", 3.0)
                 fl.is_added_to_simulation = True
 
+            if getattr(program, "same_height_for_all", True):
+                shared_h = self.floors[0].floor_height_m if self.floors else 3.0
+                for f in program.simulation.grid_world.floors.values():
+                    f.floor_height_m = shared_h
+            program.simulation.grid_world.same_height_for_all = getattr(program, "same_height_for_all", True)
             program.simulation.grid_world.set_active_floor(0)
             program.update_window_for_active_floor()
         else:
@@ -1165,9 +1289,18 @@ class CalibrationState(ProgramState):
                         )
                     fl.update_cell_size()
                     grid.cell_size_m = fl.cell_size_m
-                    program.simulation.grid_world.add_floor_from_map(grid)
+                    grid.floor_height_m = getattr(fl, "floor_height_m", 3.0)
+                    new_id = len(program.simulation.grid_world.floors)
+                    program.simulation.grid_world.add_floor_from_map(grid, floor_height_m=getattr(fl, "floor_height_m", 3.0))
+                    if new_id in program.simulation.grid_world.floors:
+                        program.simulation.grid_world.floors[new_id].floor_height_m = getattr(fl, "floor_height_m", 3.0)
                     fl.is_added_to_simulation = True
 
+            if getattr(program, "same_height_for_all", True):
+                shared_h = self.floors[0].floor_height_m if self.floors else 3.0
+                for f in program.simulation.grid_world.floors.values():
+                    f.floor_height_m = shared_h
+            program.simulation.grid_world.same_height_for_all = getattr(program, "same_height_for_all", True)
             new_floor_id = len(program.simulation.grid_world.floors) - 1
             program.simulation.grid_world.set_active_floor(new_floor_id)
             program.update_window_for_active_floor()
@@ -1188,22 +1321,28 @@ class CalibrationState(ProgramState):
                 cur_bs = cur.block_size if (self.lock_grid_size and cur) else 25
                 cur_sens = cur.acceptance_threshold if cur else 0.40
                 cur_px = cur.px_per_m if (self.lock_grid_size and cur) else None
+                def_h = 3.0
+                if getattr(program, "same_height_for_all", True) and self.floors:
+                    def_h = getattr(self.floors[0], "floor_height_m", 3.0)
                 new_floor = FloorCalibrationData(
                     next_path,
                     block_size=cur_bs,
                     acceptance_threshold=cur_sens,
                     px_per_m=cur_px,
+                    floor_height_m=def_h,
                 )
                 self._init_floor_fit(new_floor)
                 self.floors.append(new_floor)
                 self.active_floor_index = len(self.floors) - 1
                 self._build_ui(program)
                 self._recompute_detection()
+                if len(self.floors) > 1:
+                    self._show_height_dialog(program)
 
         elif event.ui_element == self._btn_back:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager is not None:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
 
         elif event.ui_element == self._btn_load_project:
@@ -1330,6 +1469,52 @@ class CalibrationState(ProgramState):
                 self._recompute_detection()
                 self._build_ui(program)
 
+        elif event.ui_element == getattr(self, "_btn_floor_height", None):
+            self._show_height_dialog(program)
+
+        elif event.ui_element == getattr(self, "_height_same_all_btn", None):
+            program.same_height_for_all = not getattr(program, "same_height_for_all", True)
+            if program.simulation and program.simulation.grid_world:
+                program.simulation.grid_world.same_height_for_all = program.same_height_for_all
+            state_txt = "ON" if program.same_height_for_all else "OFF"
+            self._height_same_all_btn.set_text(f"Same height for all floors: {state_txt}")
+            self._height_same_all_btn.change_object_id("#tool_btn_selected" if program.same_height_for_all else "#tool_btn")
+
+        elif event.ui_element == getattr(self, "_height_btn_apply", None) or (
+            event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED and event.ui_element == getattr(self, "_height_entry", None)
+        ):
+            if getattr(self, "_height_entry", None):
+                try:
+                    val_str = self._height_entry.get_text().strip().replace(",", ".")
+                    val = float(val_str)
+                    if val <= 0:
+                        raise ValueError("Height must be positive")
+                    val = max(1.0, min(20.0, val))
+                    same = getattr(program, "same_height_for_all", True)
+                    if same:
+                        for fl in self.floors:
+                            fl.floor_height_m = val
+                        if program.simulation and program.simulation.grid_world:
+                            program.simulation.grid_world.set_floor_height(0, val, same_for_all=True)
+                    else:
+                        cur = self.active_floor
+                        if cur:
+                            cur.floor_height_m = val
+                        if program.simulation and program.simulation.grid_world:
+                            world = program.simulation.grid_world
+                            world.set_floor_height(world.active_floor_id, val, same_for_all=False)
+                except Exception as e:
+                    logger.warning("Invalid floor height input: %s", e)
+            if getattr(self, "_height_window", None):
+                self._height_window.kill()
+                self._height_window = None
+            self._build_ui(program)
+
+        elif event.ui_element == getattr(self, "_height_btn_cancel", None):
+            if getattr(self, "_height_window", None):
+                self._height_window.kill()
+                self._height_window = None
+
         elif event.ui_element == self._btn_zoom_in:
             cur = self.active_floor
             if cur:
@@ -1365,9 +1550,9 @@ class CalibrationState(ProgramState):
                     self._scale_input_window = None
                 self._build_ui(program)
                 return
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager is not None:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
         elif key == pygame.K_LEFT:
             cur = self.active_floor
@@ -1400,6 +1585,9 @@ class CalibrationState(ProgramState):
         if getattr(self, "_scale_input_window", None) is not None:
             self._scale_input_window.kill()
             self._scale_input_window = None
+        if getattr(self, "_height_window", None) is not None:
+            self._height_window.kill()
+            self._height_window = None
         self.is_measuring = False
         self.measure_p1 = None
         self.measure_p2 = None
@@ -1457,6 +1645,13 @@ class EditorState(ProgramState):
         self._btn_drone = None
         self._btn_stairs = None
         self._btn_random_crowd = None
+        self._btn_clear_entities = None
+        self._btn_floor_height = None
+        self._height_window = None
+        self._height_entry = None
+        self._height_same_all_btn = None
+        self._height_btn_apply = None
+        self._height_btn_cancel = None
         self._crowd_window = None
         self._crowd_entry = None
         self._crowd_btn_apply = None
@@ -1483,14 +1678,25 @@ class EditorState(ProgramState):
         screen_w, screen_h = program.screen.get_size()
         sidebar_x = screen_w - SIDEBAR_WIDTH
 
+        if screen_w >= 1050:
+            save_x = 300
+            save_w = 115
+            menu_x = save_x + save_w + 10
+            menu_w = 70
+        else:
+            save_x = 140
+            save_w = 100
+            menu_x = save_x + save_w + 8
+            menu_w = 65
+
         self._save_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(270, 9, 115, 30),
+            pygame.Rect(save_x, 9, save_w, 30),
             "Save (Ctrl+S)",
             manager=program.ui_manager,
             object_id="#save_button",
         )
         self._menu_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(395, 9, 70, 30),
+            pygame.Rect(menu_x, 9, menu_w, 30),
             "Menu",
             manager=program.ui_manager,
             object_id="#menu_button",
@@ -1582,26 +1788,125 @@ class EditorState(ProgramState):
             object_id="#tool_btn_selected" if self.selected_tool == Tool.STAIRS else "#tool_btn",
         )
 
+        world = program.simulation.grid_world if program.simulation else None
+        active_floor = world.active_floor if world else None
+        cur_h = getattr(active_floor, "floor_height_m", 3.0) if active_floor else 3.0
+
         btn_w_half = 122
         gap = 4
         action_y = 402
         self._btn_random_crowd = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, action_y, btn_w_half, 34),
+            pygame.Rect(tool_x, action_y, btn_w_half, 32),
             "Random Crowd",
             manager=program.ui_manager,
             object_id="#btn_secondary",
         )
         self._save_project_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x + btn_w_half + gap, action_y, btn_w_half, 34),
+            pygame.Rect(tool_x + btn_w_half + gap, action_y, btn_w_half, 32),
             "Save Project",
             manager=program.ui_manager,
             object_id="#btn_secondary",
         )
+        action_y += 36
+        self._btn_clear_entities = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, action_y, tool_w, 32),
+            "Clear People & Drones",
+            manager=program.ui_manager,
+            object_id="#btn_secondary",
+            tool_tip_text="Clear evacuees and agents on this floor",
+        )
+        action_y += 36
+
+        active_floor_id = world.active_floor_id if world else 0
+        self._btn_floor_height = None
+        if active_floor_id > 0:
+            f_num = active_floor_id + 1
+            f_prev = active_floor_id
+            self._btn_floor_height = pygame_gui.elements.UIButton(
+                pygame.Rect(tool_x, action_y, tool_w, 32),
+                f"Height (Floor {f_prev}–{f_num}): {cur_h:.1f}m",
+                manager=program.ui_manager,
+                object_id="#btn_secondary",
+                tool_tip_text=f"Configure height between Floor {f_prev} and Floor {f_num}",
+            )
+            action_y += 36
+
         self._btn_toggle_grid = pygame_gui.elements.UIButton(
-            pygame.Rect(tool_x, action_y + 40, tool_w, 32),
+            pygame.Rect(tool_x, action_y, tool_w, 32),
             "Grid",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if program.view_options.show_grid else "#tool_btn",
+        )
+
+    def _show_height_dialog(self, program):
+        if getattr(self, "_height_window", None) is not None:
+            self._height_window.kill()
+            self._height_window = None
+
+        screen_w, screen_h = program.screen.get_size()
+        win_w = 340
+        win_h = 230
+        win_x = max(20, (screen_w - SIDEBAR_WIDTH - win_w) // 2)
+        win_y = max(20, (screen_h - win_h) // 2)
+
+        world = program.simulation.grid_world if program.simulation else None
+        active_floor_id = world.active_floor_id if world else 1
+        active_floor = world.active_floor if world else None
+        same = getattr(program, "same_height_for_all", True)
+        if same and world and world.floors:
+            cur_h = getattr(world.floors.get(active_floor_id, world.floors[0]), "floor_height_m", 3.0)
+        else:
+            cur_h = getattr(active_floor, "floor_height_m", 3.0) if active_floor else 3.0
+
+        f_num = max(2, active_floor_id + 1)
+        f_prev = f_num - 1
+
+        self._height_window = pygame_gui.elements.UIWindow(
+            rect=pygame.Rect(win_x, win_y, win_w, win_h),
+            manager=program.ui_manager,
+            window_display_title=f"Set Height (Floor {f_prev}–{f_num})",
+            object_id="#scale_window",
+        )
+
+        pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(16, 10, win_w - 32, 22),
+            text=f"Height between Floor {f_prev} and Floor {f_num} (m):",
+            manager=program.ui_manager,
+            container=self._height_window,
+        )
+        self._height_entry = pygame_gui.elements.UITextEntryLine(
+            relative_rect=pygame.Rect(16, 34, win_w - 32, 30),
+            manager=program.ui_manager,
+            container=self._height_window,
+            initial_text=f"{cur_h:.1f}",
+        )
+        self._height_info_lbl = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(16, 68, win_w - 32, 20),
+            text=f"~{round(cur_h / 0.17)} stair steps (standard 17cm rise)",
+            manager=program.ui_manager,
+            container=self._height_window,
+        )
+        self._height_same_all_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(16, 94, win_w - 32, 30),
+            text="Same height for all floors: ON" if same else "Same height for all floors: OFF",
+            manager=program.ui_manager,
+            container=self._height_window,
+            object_id="#tool_btn_selected" if same else "#tool_btn",
+        )
+        btn_w = (win_w - 40) // 2
+        self._height_btn_apply = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(16, 136, btn_w, 32),
+            text="Apply",
+            manager=program.ui_manager,
+            container=self._height_window,
+            object_id="#btn_start_sim",
+        )
+        self._height_btn_cancel = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(24 + btn_w, 136, btn_w, 32),
+            text="Cancel",
+            manager=program.ui_manager,
+            container=self._height_window,
+            object_id="#menu_button",
         )
 
     def _show_crowd_dialog(self, program):
@@ -1732,6 +2037,9 @@ class EditorState(ProgramState):
         if getattr(self, "_crowd_window", None) is not None:
             self._crowd_window.kill()
             self._crowd_window = None
+        if getattr(self, "_height_window", None) is not None:
+            self._height_window.kill()
+            self._height_window = None
         program.simulation.grid_world.rebuild_changed_map_data()
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
@@ -1740,9 +2048,9 @@ class EditorState(ProgramState):
         if event.ui_element in (self._save_btn, self._save_project_btn):
             _save_project(program)
         elif event.ui_element == self._menu_btn:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
         elif event.ui_element == self._nav_edit:
             pass
@@ -1768,6 +2076,45 @@ class EditorState(ProgramState):
         elif event.ui_element == self._btn_stairs:
             self.selected_tool = Tool.STAIRS
             self._rebuild_ui(program)
+        elif event.ui_element == getattr(self, "_btn_clear_entities", None):
+            world = program.simulation.grid_world
+            world.clear_people_and_drones(world.active_floor_id, program.simulation)
+            if program.drone_controller is not None:
+                program.drone_controller.reset()
+            program.plan_drone_routes()
+            self._rebuild_ui(program)
+        elif event.ui_element == getattr(self, "_btn_floor_height", None):
+            self._show_height_dialog(program)
+        elif event.ui_element == getattr(self, "_height_same_all_btn", None):
+            program.same_height_for_all = not getattr(program, "same_height_for_all", True)
+            if program.simulation and program.simulation.grid_world:
+                program.simulation.grid_world.same_height_for_all = program.same_height_for_all
+            state_txt = "ON" if program.same_height_for_all else "OFF"
+            self._height_same_all_btn.set_text(f"Same height for all floors: {state_txt}")
+            self._height_same_all_btn.change_object_id("#tool_btn_selected" if program.same_height_for_all else "#tool_btn")
+        elif event.ui_element == getattr(self, "_height_btn_apply", None) or (
+            event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED and event.ui_element == getattr(self, "_height_entry", None)
+        ):
+            if program.simulation and getattr(self, "_height_entry", None):
+                try:
+                    val_str = self._height_entry.get_text().strip().replace(",", ".")
+                    val = float(val_str)
+                    if val <= 0:
+                        raise ValueError("Height must be positive")
+                    val = max(1.0, min(20.0, val))
+                    world = program.simulation.grid_world
+                    same = getattr(program, "same_height_for_all", True)
+                    world.set_floor_height(world.active_floor_id, val, same_for_all=same)
+                except Exception as e:
+                    logger.warning("Invalid floor height input: %s", e)
+            if getattr(self, "_height_window", None):
+                self._height_window.kill()
+                self._height_window = None
+            self._rebuild_ui(program)
+        elif event.ui_element == getattr(self, "_height_btn_cancel", None):
+            if getattr(self, "_height_window", None):
+                self._height_window.kill()
+                self._height_window = None
         elif event.ui_element == self._btn_random_crowd:
             self._show_crowd_dialog(program)
         elif event.ui_element == self._crowd_btn_apply or (event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED and event.ui_element == self._crowd_entry):
@@ -1883,14 +2230,25 @@ class OverviewState(ProgramState):
         screen_w, screen_h = program.screen.get_size()
         sidebar_x = screen_w - SIDEBAR_WIDTH
 
+        if screen_w >= 1050:
+            save_x = 300
+            save_w = 115
+            menu_x = save_x + save_w + 10
+            menu_w = 70
+        else:
+            save_x = 140
+            save_w = 100
+            menu_x = save_x + save_w + 8
+            menu_w = 65
+
         self._save_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(270, 9, 115, 30),
+            pygame.Rect(save_x, 9, save_w, 30),
             "Save (Ctrl+S)",
             manager=program.ui_manager,
             object_id="#save_button",
         )
         self._menu_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(395, 9, 70, 30),
+            pygame.Rect(menu_x, 9, menu_w, 30),
             "Menu",
             manager=program.ui_manager,
             object_id="#menu_button",
@@ -2001,9 +2359,9 @@ class OverviewState(ProgramState):
         if event.ui_element in (self._save_btn, self._save_project_btn):
             _save_project(program)
         elif event.ui_element == self._menu_btn:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
         elif event.ui_element == self._nav_edit:
             program.transition_to(EditorState())
@@ -2129,6 +2487,7 @@ class SimulationRunningState(ProgramState):
         self._nav_link = None
         self._nav_sim = None
         self._btn_add_floor = None
+        self._btn_hazard = None
         self._btn_pause = None
         self._btn_reset = None
         self._btn_start_sim = None
@@ -2151,14 +2510,25 @@ class SimulationRunningState(ProgramState):
         screen_w, screen_h = program.screen.get_size()
         sidebar_x = screen_w - SIDEBAR_WIDTH
 
+        if screen_w >= 1050:
+            save_x = 300
+            save_w = 115
+            menu_x = save_x + save_w + 10
+            menu_w = 70
+        else:
+            save_x = 140
+            save_w = 100
+            menu_x = save_x + save_w + 8
+            menu_w = 65
+
         self._save_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(270, 9, 115, 30),
+            pygame.Rect(save_x, 9, save_w, 30),
             "Save (Ctrl+S)",
             manager=program.ui_manager,
             object_id="#save_button",
         )
         self._menu_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(395, 9, 70, 30),
+            pygame.Rect(menu_x, 9, menu_w, 30),
             "Menu",
             manager=program.ui_manager,
             object_id="#menu_button",
@@ -2215,8 +2585,17 @@ class SimulationRunningState(ProgramState):
         btn_w_half = 122
         gap = 4
         opts = program.view_options
-        y = 246
 
+        self._btn_hazard = pygame_gui.elements.UIButton(
+            pygame.Rect(tool_x, 246, tool_w, 34),
+            "Place Hazards (Pause first)",
+            manager=program.ui_manager,
+            object_id="#tool_btn",
+            tool_tip_text="Pause simulation to place or edit hazards",
+        )
+        self._btn_hazard.disable()
+
+        y = 322
         self._btn_toggle_clusters = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, y, btn_w_half, 28),
             "Clusters",
@@ -2256,7 +2635,7 @@ class SimulationRunningState(ProgramState):
             object_id="#tool_btn_selected" if opts.show_heatmap else "#tool_btn",
         )
 
-        playback_y = 384
+        playback_y = 458
         self._btn_start_sim = pygame_gui.elements.UIButton(
             pygame.Rect(tool_x, playback_y, tool_w, 38),
             "Start Simulation",
@@ -2294,9 +2673,9 @@ class SimulationRunningState(ProgramState):
         elif event.ui_element == self._btn_finish:
             program.transition_to(ResultsState())
         elif event.ui_element == self._menu_btn:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
         elif event.ui_element == self._nav_edit:
             program.transition_to(EditorState())
@@ -2437,14 +2816,25 @@ class SimulationPausedState(ProgramState):
         screen_w, screen_h = program.screen.get_size()
         sidebar_x = screen_w - SIDEBAR_WIDTH
 
+        if screen_w >= 1050:
+            save_x = 300
+            save_w = 115
+            menu_x = save_x + save_w + 10
+            menu_w = 70
+        else:
+            save_x = 140
+            save_w = 100
+            menu_x = save_x + save_w + 8
+            menu_w = 65
+
         self._save_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(270, 9, 115, 30),
+            pygame.Rect(save_x, 9, save_w, 30),
             "Save (Ctrl+S)",
             manager=program.ui_manager,
             object_id="#save_button",
         )
         self._menu_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(395, 9, 70, 30),
+            pygame.Rect(menu_x, 9, menu_w, 30),
             "Menu",
             manager=program.ui_manager,
             object_id="#menu_button",
@@ -2577,9 +2967,9 @@ class SimulationPausedState(ProgramState):
         if event.ui_element == self._save_btn:
             _save_project(program)
         elif event.ui_element == self._menu_btn:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
         elif event.ui_element == self._nav_edit:
             program.transition_to(EditorState())
@@ -2678,14 +3068,25 @@ class SimulationEditorState(ProgramState):
         screen_w, screen_h = program.screen.get_size()
         sidebar_x = screen_w - SIDEBAR_WIDTH
 
+        if screen_w >= 1050:
+            save_x = 300
+            save_w = 115
+            menu_x = save_x + save_w + 10
+            menu_w = 70
+        else:
+            save_x = 140
+            save_w = 100
+            menu_x = save_x + save_w + 8
+            menu_w = 65
+
         self._save_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(270, 9, 115, 30),
+            pygame.Rect(save_x, 9, save_w, 30),
             "Save (Ctrl+S)",
             manager=program.ui_manager,
             object_id="#save_button",
         )
         self._menu_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(395, 9, 70, 30),
+            pygame.Rect(menu_x, 9, menu_w, 30),
             "Menu",
             manager=program.ui_manager,
             object_id="#menu_button",
@@ -2750,9 +3151,9 @@ class SimulationEditorState(ProgramState):
         if event.ui_element == self._save_btn:
             _save_project(program)
         elif event.ui_element == self._menu_btn:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
         elif event.ui_element == self._nav_edit:
             program.transition_to(EditorState())
@@ -2824,8 +3225,9 @@ class ResultsState(ProgramState):
         screen_w, _ = program.screen.get_size()
         sidebar_x = screen_w - SIDEBAR_WIDTH
 
+        menu_x = 300 if screen_w >= 1050 else 140
         self._menu_btn = pygame_gui.elements.UIButton(
-            pygame.Rect(395, 9, 70, 30),
+            pygame.Rect(menu_x, 9, 70, 30),
             "Menu",
             manager=program.ui_manager,
             object_id="#menu_button",
@@ -2874,9 +3276,9 @@ class ResultsState(ProgramState):
         elif event.ui_element == self._nav_edit:
             program.transition_to(EditorState())
         elif event.ui_element == self._menu_btn:
-            program.screen = pygame.display.set_mode(MENU_WINDOW_SIZE)
+            cur_size = program.screen.get_size()
             if program.ui_manager:
-                program.ui_manager.set_window_resolution(MENU_WINDOW_SIZE)
+                program.ui_manager.set_window_resolution(cur_size)
             program.transition_to(MainMenuState())
 
     def handle_key(self, program, key):

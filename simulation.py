@@ -91,6 +91,8 @@ class Simulation:
             self.start()
 
         for evacuee in self.evacuees:
+            if getattr(evacuee, "in_stair_transit", False):
+                continue
             fl = self.grid_world.floors.get(evacuee.floor_id)
             if fl and hasattr(fl, "heatmap_grid"):
                 cur_v = fl.heatmap_grid.get(evacuee.grid_x, evacuee.grid_y) or 0

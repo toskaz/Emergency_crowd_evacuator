@@ -22,7 +22,9 @@ class GlobalCoordinator:
 
     def get_drone_cluster(self, drone):
         floor_id = getattr(drone, "floor_id", 0)
-        floor = self.world.floors[floor_id]
+        floor = self.world.floors.get(floor_id)
+        if floor is None:
+            return None
         cluster_grid = floor.cluster_grid
 
         cluster_id = cluster_grid.get(drone.grid_x, drone.grid_y)
@@ -95,6 +97,9 @@ class GlobalCoordinator:
         self.update_graph_passability()
 
         for drone in drones:
+            if getattr(drone, "in_stair_transit", False):
+                logger.debug("Coordinator: Drone %s is in stair transit; deferring replan until arrival.", drone)
+                continue
             current_route = self.drone_routes.get(drone, [])
             drone_cluster = self.get_drone_cluster(drone)
 

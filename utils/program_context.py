@@ -63,6 +63,7 @@ class ProgramContext:
 
         self.drone_routes = {}
         self.link_stairs_mode = False
+        self.same_height_for_all = True
         self.view_options = ViewOptions()
         self.simulation_options = SimulationOptions()
 
@@ -101,13 +102,17 @@ class ProgramContext:
     def initialize_world(self, map_grid):
         if self.simulation is None:
             self.simulation = Simulation()
-        self.simulation.grid_world.add_floor_from_map(map_grid)
+        h = getattr(map_grid, "floor_height_m", 3.0)
+        self.simulation.grid_world.add_floor_from_map(map_grid, floor_height_m=h)
+        self.simulation.grid_world.same_height_for_all = self.same_height_for_all
 
-        screen_width, screen_height = self._calculate_screen_size(map_grid)
+        screen_width, screen_height = self.screen.get_size()
 
-        self.screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
-        self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
+        if self.ui_manager is None:
+            self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
+        else:
+            self.ui_manager.set_window_resolution((screen_width, screen_height))
 
         self.window = Window(map_grid)
         self._center_camera(map_grid, screen_width, screen_height)
@@ -119,12 +124,15 @@ class ProgramContext:
     def initialize_world_from_dict(self, data):
         self.simulation = Simulation()
         self.simulation.grid_world.from_dict(data)
+        self.same_height_for_all = getattr(self.simulation.grid_world, "same_height_for_all", True)
 
         map_grid = self.simulation.grid_world.map_grid
-        screen_width, screen_height = self._calculate_screen_size(map_grid)
-        self.screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
+        screen_width, screen_height = self.screen.get_size()
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
-        self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
+        if self.ui_manager is None:
+            self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
+        else:
+            self.ui_manager.set_window_resolution((screen_width, screen_height))
 
         self.window = Window(map_grid)
         self._center_camera(map_grid, screen_width, screen_height)
@@ -137,13 +145,8 @@ class ProgramContext:
         if self.simulation is None:
             return
         map_grid = self.simulation.grid_world.map_grid
-        screen_width, screen_height = self._calculate_screen_size(map_grid)
         current_w, current_h = self.screen.get_size()
-        if (current_w, current_h) != (screen_width, screen_height):
-            self.screen = pygame.display.set_mode((screen_width, screen_height), pygame.RESIZABLE)
-            if self.ui_manager is not None:
-                self.ui_manager.set_window_resolution((screen_width, screen_height))
-        self._center_camera(map_grid, screen_width, screen_height)
+        self._center_camera(map_grid, current_w, current_h)
         if self.window is not None:
             self.window.screen = self.screen
 

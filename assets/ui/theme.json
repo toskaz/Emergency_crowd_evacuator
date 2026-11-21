@@ -1,5 +1,9 @@
 {
   "defaults": {
+    "font": {
+      "name": "noto_sans",
+      "size": "13"
+    },
     "colours": {
       "dark_bg": "#1e1e1e",
       "normal_bg": "#2b2b2b",
@@ -17,15 +21,21 @@
     }
   },
   "button": {
+    "font": {
+      "name": "noto_sans",
+      "size": "13"
+    },
     "colours": {
       "normal_bg": "#2b2b2b",
       "hovered_bg": "#383838",
       "active_bg": "#14532d",
       "disabled_bg": "#202020",
+      "disabled_text": "#555555",
       "normal_text": "#d4d4d4",
       "hovered_text": "#ffffff",
       "normal_border": "#15803d",
-      "hovered_border": "#555555"
+      "hovered_border": "#555555",
+      "disabled_border": "#282828"
     },
     "misc": {
       "shape": "rounded_rectangle",
@@ -96,10 +106,13 @@
       "normal_bg": "#2b2b2b",
       "hovered_bg": "#333333",
       "active_bg": "#143d24",
+      "disabled_bg": "#1c1c1c",
+      "disabled_text": "#5a5a5a",
       "normal_text": "#d0d0d0",
       "hovered_text": "#ffffff",
       "normal_border": "#15803d",
-      "hovered_border": "#555555"
+      "hovered_border": "#555555",
+      "disabled_border": "#282828"
     },
     "misc": {
       "shape": "rounded_rectangle",
