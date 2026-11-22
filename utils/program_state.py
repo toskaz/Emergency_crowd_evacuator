@@ -164,6 +164,13 @@ class ProgramState:
             f"Evacuated: {evacuated}/{total}",
         ]
         world = context.simulation.grid_world if context.simulation else None
+        door_flow = getattr(world, "door_flow", None) if world else None
+        if door_flow is not None:
+            congested = sum(1 for doorway in door_flow.doorways if doorway.congested)
+            queued = sum(doorway.queue for doorway in door_flow.doorways)
+            lines.append(
+                f"Door flow: {door_flow.rate_per_cell:g}/cell/tick, queued {queued}, congested {congested}"
+            )
         if world and context.link_stairs_mode:
             if world.pending_stair_endpoint is not None:
                 pending_floor = world.pending_stair_endpoint[0] + 1
@@ -205,6 +212,9 @@ class ProgramState:
                 return
             if key == pygame.K_v:
                 program.view_options.show_drone_routes = not program.view_options.show_drone_routes
+                return
+            if key == pygame.K_o:
+                program.view_options.show_door_flow = not program.view_options.show_door_flow
                 return
         self.handle_key(program, key)
 
@@ -2380,6 +2390,7 @@ class SimulationRunningState(ProgramState):
             evacuee_actions = get_actions(program.simulation.evacuees, options.action)
 
         if options.autonomous_drones:
+            program.reroute_for_door_flow()
             drone_actions = program.drone_controller.get_actions(
                 program.simulation,
                 program.drone_routes,

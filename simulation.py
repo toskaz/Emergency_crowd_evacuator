@@ -3,7 +3,9 @@ from grids.grid_world import Grid_World
 from grids.grid import Grid
 from entities.evacuee import Evacuee
 from entities.drone import Drone
+from grids.door_flow import DoorFlow
 from map.cell import CellType
+from utils import config
 
 
 class Simulation:
@@ -55,6 +57,7 @@ class Simulation:
                         self.grid_world.add_drone(drone)
 
         assign_drone_groups(self.grid_world, self.drones, self.evacuees)
+        self.reset_door_flow()
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.prepared = True
 
@@ -72,8 +75,14 @@ class Simulation:
             evacuee.grid_x, evacuee.grid_y, evacuee.floor_id
         )
 
+    def reset_door_flow(self):
+        world = self.grid_world
+        world.door_flow = DoorFlow(world) if config.door_flow_enabled and world.floors else None
+
     def remove_evacuated(self):
         evacuated = [evacuee for evacuee in self.evacuees if self.touching_exit(evacuee)]
+        if self.grid_world.door_flow is not None:
+            evacuated = self.grid_world.door_flow.exit_departures(evacuated)
 
         for evacuee in evacuated:
             self.grid_world.remove_evacuee(evacuee)
@@ -89,6 +98,8 @@ class Simulation:
     def step(self, evacuee_actions, drone_actions=None):
         if not self.started:
             self.start()
+        if self.step_count == 0:
+            self.reset_door_flow()
 
         for evacuee in self.evacuees:
             fl = self.grid_world.floors.get(evacuee.floor_id)
@@ -103,5 +114,7 @@ class Simulation:
             self.grid_world.step_drones(self.drones, drone_actions)
             self.remove_evacuated()
 
+        if self.grid_world.door_flow is not None:
+            self.grid_world.door_flow.end_tick(self.evacuees)
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.step_count += 1

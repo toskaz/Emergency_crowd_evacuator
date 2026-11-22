@@ -16,6 +16,7 @@ class ClusterGrid:
         self.grid = Grid(grid.width, grid.height)
         self.clusters = []
         self.adjacent_cluster_pairs = set()
+        self.doorway_count = 0
         self.build(grid, include_doors=include_doors)
 
     def build(self, grid, *, include_doors=True):
@@ -50,6 +51,7 @@ class ClusterGrid:
 
     def add_door_sectors(self, grid):
         candidates = set()
+        spans = {}
 
         def collect_spans(line):
             opening = []
@@ -57,10 +59,11 @@ class ClusterGrid:
             for x, y in line:
                 if grid.get(x, y) == CellType.WALL:
                     if starts_at_wall and 0 < len(opening) <= MAX_DOOR_CLUSTER_SIZE:
-                        candidates.update(
-                            cell for cell in opening
-                            if grid.get(*cell) not in (CellType.EXIT, CellType.STAIRS)
-                        )
+                        for cell in opening:
+                            if grid.get(*cell) in (CellType.EXIT, CellType.STAIRS):
+                                continue
+                            candidates.add(cell)
+                            spans[cell] = min(spans.get(cell, len(opening)), len(opening))
                     opening = []
                     starts_at_wall = True
                 else:
@@ -87,6 +90,9 @@ class ClusterGrid:
                         component.add(neighbor)
                         pending.append(neighbor)
 
+            doorway_id = self.doorway_count
+            self.doorway_count += 1
+            doorway_width = min(spans[cell] for cell in component)
             origin_x = min(x for x, _ in component)
             origin_y = min(y for _, y in component)
             for x, y in sorted(component, key=lambda cell: (cell[1], cell[0])):
@@ -95,6 +101,8 @@ class ClusterGrid:
                 left = origin_x + (x - origin_x) // MAX_DOOR_CLUSTER_SIZE * MAX_DOOR_CLUSTER_SIZE
                 top = origin_y + (y - origin_y) // MAX_DOOR_CLUSTER_SIZE * MAX_DOOR_CLUSTER_SIZE
                 cluster_id = self._add_cluster(ClusterType.DOOR)
+                self.clusters[cluster_id].width = doorway_width
+                self.clusters[cluster_id].doorway_id = doorway_id
                 self.grid.set(x, y, cluster_id)
                 pending = deque([(x, y)])
                 while pending:
@@ -120,6 +128,8 @@ class ClusterGrid:
                     continue
 
                 cluster_id = self._add_cluster(ClusterType.EXIT)
+                self.clusters[cluster_id].doorway_id = self.doorway_count
+                self.doorway_count += 1
                 pending = deque([(x, y)])
                 seen.add((x, y))
 
@@ -142,6 +152,12 @@ class ClusterGrid:
                         ):
                             seen.add(neighbor)
                             pending.append(neighbor)
+
+                cells = self.clusters[cluster_id].cells
+                self.clusters[cluster_id].width = max(
+                    max(x for x, _ in cells) - min(x for x, _ in cells) + 1,
+                    max(y for _, y in cells) - min(y for _, y in cells) + 1,
+                )
 
     def add_stair_sectors(self, grid):
         seen = set()

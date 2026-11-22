@@ -35,6 +35,8 @@ class Grid_World:
         self.changed_floor_ids = set()
         self.navigation_graph = None
         self.drone_ids = {}
+        self.door_flow = None
+        self.flow_forecast = None
         if self.floors:
             self.rebuild_map_data()
 
@@ -764,6 +766,15 @@ class Grid_World:
 
     def _step_entities(self, entities, actions, entity_type):
         desired_moves = self.get_desired_moves(entities, actions, entity_type)
-        moves = self.resolve_moves(entities, desired_moves, entity_type)
+        if entity_type == "evacuee" and self.door_flow is not None:
+            moves = self.door_flow.limit(
+                entities,
+                desired_moves,
+                lambda granted: self.resolve_moves(entities, granted, entity_type),
+            )
+        else:
+            moves = self.resolve_moves(entities, desired_moves, entity_type)
         self.apply_moves(moves, entity_type)
+        if entity_type == "evacuee" and self.door_flow is not None:
+            self.door_flow.record_moves(moves)
         return moves

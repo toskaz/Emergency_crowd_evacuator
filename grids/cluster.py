@@ -14,6 +14,8 @@ class Cluster:
     cells: list[tuple[int, int]] = field(default_factory=list)
     type: ClusterType = ClusterType.NORMAL
     centroid: tuple[float, float] | None = None
+    width: int | None = None
+    doorway_id: int | None = None
 
     def calculate_centroid(self):
         if not self.cells:

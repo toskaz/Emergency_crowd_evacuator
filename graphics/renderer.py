@@ -206,6 +206,46 @@ def draw_heatmap(screen, floor):
     screen.blit(overlay, (0, 0))
 
 
+def door_flow_color(doorway):
+    if doorway.congested:
+        return (239, 68, 68, 170)
+    if (
+        doorway.queue >= config.door_congestion_min_people
+        and doorway.queue_ticks >= config.door_congestion_ticks / 2
+    ):
+        return (249, 115, 22, 150)
+    if doorway.queue > 0:
+        return (234, 179, 8, 130)
+    return (34, 197, 94, 70)
+
+
+def draw_door_flow(screen, world, font=None):
+    door_flow = getattr(world, "door_flow", None)
+    if door_flow is None:
+        return
+    overlay = pygame.Surface((screen.get_width(), screen.get_height()), pygame.SRCALPHA)
+    d_size = config.drawing_size
+    labels = []
+    for doorway in door_flow.doorways:
+        if doorway.floor_id != world.active_floor_id:
+            continue
+        color = door_flow_color(doorway)
+        for x, y in doorway.cells:
+            px, py = grid_to_pixel(x, y)
+            pygame.draw.rect(overlay, color, (px, py, d_size, d_size))
+        if font is not None and doorway.queue > 0:
+            x = min(cell[0] for cell in doorway.cells)
+            y = min(cell[1] for cell in doorway.cells)
+            labels.append((f"{doorway.queue} ({doorway.queue_ticks:.0f}t)", grid_to_pixel(x, y)))
+    screen.blit(overlay, (0, 0))
+    for text, (px, py) in labels:
+        surface = font.render(text, True, (255, 255, 255))
+        background = pygame.Surface((surface.get_width() + 4, surface.get_height() + 2), pygame.SRCALPHA)
+        background.fill((15, 23, 42, 200))
+        screen.blit(background, (px - 2, py - surface.get_height() - 3))
+        screen.blit(surface, (px, py - surface.get_height() - 2))
+
+
 def draw_legend(screen, font, top_left=None, bottom_left=None):
     legend_items = [
         ("Wall", Color.WALL.value, False),

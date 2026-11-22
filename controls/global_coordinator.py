@@ -2,7 +2,10 @@ from collections import deque
 import logging
 import math
 
+import networkx as nx
+
 from grids.cluster import ClusterType
+from utils import config
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +58,7 @@ class GlobalCoordinator:
             self.drone_routes[drone] = []
             return []
 
-        # TODO: przygotowanie pod implementację Flow Rate w grafie
-        self.update_flow_weights()
+        self.update_flow_weights(drone, current_cluster_node)
 
         exit_nodes = self.get_exit_nodes()
         distance, route = self.world.navigation_graph.distance_to_closest_source(
@@ -227,11 +229,24 @@ class GlobalCoordinator:
 
         return False
 
-    def update_flow_weights(self):
-        """
-        Miejsce przygotowane pod przyszłą implementację Flow Rate (np. predykcja w kroku +50).
-        Kiedy zespół zaimplementuje obliczanie przepływu w klastrach, tutaj będą
-        aktualizowane wagi krawędzi G[u][v]['weight'] przed wyznaczeniem trasy.
-        """
-        pass
+    def update_flow_weights(self, drone=None, start_node=None):
+        forecast = getattr(self.world, "flow_forecast", None)
+        if not config.door_reroute_enabled or forecast is None:
+            return
+        forecast.apply_edge_weights(self.world.navigation_graph.G, drone, start_node)
 
+    def flow_routes(self, drone, start_node):
+        self.update_flow_weights(drone, start_node)
+        graph = self.world.navigation_graph.G
+        routes = []
+        if start_node not in graph:
+            return routes
+        for exit_node in self.get_exit_nodes():
+            try:
+                route = nx.dijkstra_path(graph, start_node, exit_node, weight="weight")
+            except (nx.NetworkXNoPath, nx.NodeNotFound):
+                continue
+            if not self._is_remaining_route_passable(start_node, route):
+                continue
+            routes.append(route)
+        return routes

@@ -8,6 +8,7 @@ import pygame_gui
 from controls.action import Action
 from controls.drone_astar import AStarDroneController
 from controls.evacuee_rl import QLearningFollowController
+from controls.flow_forecast import FlowRerouter
 from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from simulation import Simulation
@@ -34,6 +35,7 @@ class ViewOptions:
     show_drone_routes: bool = True
     show_assignments: bool = False
     show_heatmap: bool = False
+    show_door_flow: bool = True
 
 
 @dataclass
@@ -57,6 +59,7 @@ class ProgramContext:
         self.drone_controller = None
         self.rl_evacuee_controller = None
         self.coordinator = None
+        self.flow_rerouter = None
         self.imported_image_path = None
         self.calibrated_floors = []
         self.running = True
@@ -166,6 +169,15 @@ class ProgramContext:
         self.state.exit(self)
         self.state = state
         self.state.enter(self)
+
+    def reroute_for_door_flow(self):
+        if self.coordinator is None or not self.simulation:
+            return []
+        if self.flow_rerouter is None or self.flow_rerouter.coordinator is not self.coordinator:
+            self.flow_rerouter = FlowRerouter(self.coordinator)
+        return self.flow_rerouter.step(
+            self.simulation, self.drone_routes, self.drone_controller
+        )
 
     def plan_drone_routes(self):
         if self.coordinator is None or not self.simulation:

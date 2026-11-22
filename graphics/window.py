@@ -10,6 +10,7 @@ from graphics.renderer import (
     draw_temporary_walls,
     draw_stair_highlights,
     draw_assignment_groups,
+    draw_door_flow,
     draw_map_scale,
     draw_legend,
     draw_heatmap,
@@ -91,6 +92,8 @@ class Window:
             draw_cluster_edges(self.screen, world.cluster_grid)
         if options.show_clusters:
             draw_clusters(self.screen, world.cluster_grid, font=self.small_font)
+        if getattr(options, "show_door_flow", False):
+            draw_door_flow(self.screen, world, font=self.small_font)
         draw_stair_highlights(
             self.screen,
             world,
