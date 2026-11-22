@@ -21,6 +21,8 @@ class TrainingProgress:
             self.viewer = TrainingFloorViewer(fps=fps, enabled=render_enabled)
 
     def on_episode_start(self, env, episode, total_episodes):
+        if self.episode == 0 and episode > 1:
+            self.episodes.update(episode - 1)
         self.episode, self.total_episodes = episode, total_episodes
         phase = getattr(env, "navigation_phase", None)
         if not getattr(env, "is_rehearsal", False) and self.stage != (env.curriculum_stage, phase):
@@ -29,6 +31,8 @@ class TrainingProgress:
         self.steps.reset(total=env.max_episode_steps)
         self.steps.set_postfix_str("", refresh=False)
         lesson = env.curriculum_stage or env.layout_name
+        if getattr(env.controller, "solo_episode", False) and not env.path_only:
+            lesson += " / solo rehearsal"
         if phase:
             lesson += f"/{phase}"
         if getattr(env, "scenario_source", None):

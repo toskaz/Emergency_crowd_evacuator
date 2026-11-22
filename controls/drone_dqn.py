@@ -35,8 +35,8 @@ WALL_PROXIMITY_PENALTY = 0.005
 DRONE_PROGRESS_REWARD = 0.05
 DRONE_EXIT_REWARD = 10.0
 MISSION_FAILURE_PENALTY = 20.0
-REWARD_VERSION = 3
-PATH_FOLLOWING_REWARD_VERSION = 4
+REWARD_VERSION = 7
+PATH_FOLLOWING_REWARD_VERSION = 8
 PATH_FOLLOWING_PROGRESS_REWARD = 1.0
 PATH_FOLLOWING_CLUSTER_REWARD = 10.0
 TARGET_SYNC_STEPS = 2000
@@ -46,8 +46,6 @@ VISIBILITY_REWARD = 0.002
 FOLLOWER_PROGRESS_REWARD = 0.025
 FOLLOWER_EXIT_REWARD = 10.0
 GROUP_COMPLETION_REWARD = 10.0
-FAILED_MOVE_GRACE = 2
-FAILED_MOVE_PENALTY = 0.1
 DISCOUNT = 0.995
 N_STEP = 5
 
@@ -88,17 +86,22 @@ class DroneQNetwork(nn.Module):
 
 
 class DQNDroneController:
+    network_type = DroneQNetwork
+    observation_version = OBSERVATION_VERSION
+    observation_shape = (CHANNELS, PATCH_SIZE, PATCH_SIZE)
+    feature_count = 0
+
     def __init__(self, training=True, n_step=N_STEP, path_following=False):
         if not isinstance(n_step, int) or n_step < 1:
             raise ValueError("n_step must be a positive integer")
         self.device = torch.device("cpu")
         self.training = training
         self.epsilon = 0.15
-        self.policy_network = DroneQNetwork().to(self.device)
+        self.policy_network = self.network_type().to(self.device)
         self.target_network = None
         self.optimizer = None
         if training:
-            self.target_network = DroneQNetwork().to(self.device)
+            self.target_network = self.network_type().to(self.device)
             self.target_network.load_state_dict(self.policy_network.state_dict())
             self.target_network.eval()
             self.optimizer = torch.optim.Adam(
@@ -215,16 +218,19 @@ class DQNDroneController:
         self.pending_transitions[drone] = transition
         return transition
 
-    def learn(self, simulation, routes):
+    def learn(self, simulation, routes, *, outcomes=None):
         if not self.training:
             return
         if self.path_following and not self.path_only:
             raise ValueError("Path-following rewards are only supported for path-only pretraining")
 
         for drone, transition in list(self.pending_transitions.items()):
-            reward = self._transition_reward(simulation, drone, transition)
-            success = self.mission_finished(simulation, drone)
-            mission_done = success or self.mission_failed(simulation, drone)
+            if outcomes is None:
+                reward = self._transition_reward(simulation, drone, transition)
+                success = self.mission_finished(simulation, drone)
+                mission_done = success or self.mission_failed(simulation, drone)
+            else:
+                reward, success, mission_done = outcomes[drone]
             self._commit_transition(simulation, drone, transition)
 
             next_state, _ = self._observe(simulation, drone, routes.get(drone, []))
@@ -232,9 +238,7 @@ class DQNDroneController:
             subgoal_reached = (self.path_following and not route_changed
                                and self.reached_route_subgoal(simulation, drone, transition))
             done = mission_done or subgoal_reached or (self.path_following and route_changed)
-            next_legal = self._legal_actions(simulation, drone)
-            legal_mask = np.zeros(len(Action), dtype=np.float32)
-            legal_mask[[int(candidate) for candidate in next_legal]] = 1.0
+            legal_mask = self.action_mask(simulation, drone)
             experience = (
                 transition.state, transition.action, reward, next_state, done, legal_mask
             )
@@ -359,9 +363,6 @@ class DQNDroneController:
             if len(evacuated) == len(transition.initial_group) and len(transition.evacuated_before) < len(evacuated):
                 components["completion"] = GROUP_COMPLETION_REWARD
 
-        if self._failure_count(simulation, drone, transition) > FAILED_MOVE_GRACE:
-            components["failure"] = -FAILED_MOVE_PENALTY
-
         if drone in simulation.drones and not simulation.touching_exit(drone):
             components["wall"] = -self._wall_proximity_penalty(simulation, drone.floor_id, drone.grid_x, drone.grid_y)
 
@@ -411,12 +412,13 @@ class DQNDroneController:
 
     def save(self, path):
         torch.save({
-            "observation_version": OBSERVATION_VERSION,
+            "observation_version": self.observation_version,
             "reward_version": self.reward_version,
             "learning_objective": self.learning_objective,
             "n_step": self.n_step,
             "discount": self.discount,
-            "observation_shape": (CHANNELS, PATCH_SIZE, PATCH_SIZE),
+            "observation_shape": self.observation_shape,
+            "feature_count": self.feature_count,
             "state_dict": self.policy_network.state_dict(),
         }, path)
 
@@ -427,8 +429,9 @@ class DQNDroneController:
             return False
 
         if (
-            checkpoint.get("observation_version") != OBSERVATION_VERSION
-            or tuple(checkpoint.get("observation_shape", ())) != (CHANNELS, PATCH_SIZE, PATCH_SIZE)
+            checkpoint.get("observation_version") != self.observation_version
+            or tuple(checkpoint.get("observation_shape", ())) != self.observation_shape
+            or checkpoint.get("feature_count", 0) != self.feature_count
         ):
             logger.warning("Drone model at %s uses incompatible observations; retrain with train_drones.py", path)
             return False
@@ -646,7 +649,8 @@ class DQNDroneController:
         return state, route_ids
 
     def _legal_actions(self, simulation, drone):
-        if drone not in simulation.drones or simulation.touching_exit(drone):
+        if (drone not in simulation.drones or simulation.touching_exit(drone)
+                or drone.in_stair_transit):
             return [Action.STAY]
         world = simulation.grid_world
         legal_actions = [Action.STAY]
@@ -661,20 +665,26 @@ class DQNDroneController:
                 continue
             legal_actions.append(action)
 
-        if world.stair_arrival(drone, "drone") is not None:
+        arrival = world.stair_arrival(drone, "drone")
+        if arrival is not None and world.can_move_to(arrival[1], arrival[2], arrival[0]):
             legal_actions.append(Action.USE_STAIRS)
 
         return legal_actions
+
+    def action_mask(self, simulation, drone):
+        """Use the same movement rules for acting and replay bootstrap targets."""
+        mask = np.zeros(len(Action), dtype=np.int8)
+        mask[[int(action) for action in self._legal_actions(simulation, drone)]] = 1
+        return mask
 
     def _select_action(self, state, legal_actions, drone, route_ids, simulation):
         self.decision_count += 1
         epsilon = self.epsilon if self.training else 0.0
         if random.random() < epsilon:
-            return random.choice(legal_actions)
+            return self._explore(legal_actions, drone)
 
         with torch.no_grad():
-            tensor = torch.from_numpy(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_network(tensor)[0].cpu().numpy()
+            q_values = self.policy_network(self._state_batch((state,)))[0].cpu().numpy()
         legal_values = q_values[[int(action) for action in legal_actions]]
         if not np.isfinite(legal_values).all() or (
             self.max_training_q is not None and np.max(np.abs(legal_values)) > self.max_training_q
@@ -687,16 +697,22 @@ class DQNDroneController:
 
         return Action(int(np.argmax(scores)))
 
+    def _explore(self, legal_actions, drone):
+        return random.choice(legal_actions)
+
+    def _state_batch(self, states):
+        return torch.from_numpy(np.stack(states)).to(self.device)
+
     def _optimize(self):
         if self.target_network is None or self.optimizer is None:
             raise RuntimeError("DQN optimization requires a training controller")
 
         batch = self._sample_replay()
         states, actions, rewards, next_states, dones, next_legal_masks, discounts = zip(*batch)
-        states = torch.from_numpy(np.stack(states)).to(self.device)
+        states = self._state_batch(states)
         actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(1)
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_states = torch.from_numpy(np.stack(next_states)).to(self.device)
+        next_states = self._state_batch(next_states)
         dones = torch.tensor(dones, dtype=torch.float32, device=self.device)
         next_legal_masks = torch.from_numpy(np.stack(next_legal_masks)).to(self.device)
         discounts = torch.tensor(discounts, dtype=torch.float32, device=self.device)

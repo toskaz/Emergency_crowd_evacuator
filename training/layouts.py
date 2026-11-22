@@ -4,7 +4,7 @@ from map.cell import CellType
 
 
 LAYOUT_KINDS = ("rooms", "switchbacks", "mixed_building")
-CURRICULUM_STAGES = ("basic", "turns", "stairs", "mixed")
+CURRICULUM_STAGES = ("basic", "turns", "mixed")
 BUILDING_SIZES = ((49, 35), (63, 49), (77, 56))
 CARDINAL_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
@@ -13,7 +13,7 @@ def generate_curriculum_building(simulation, rng, stage):
     if stage not in CURRICULUM_STAGES[:-1]:
         raise ValueError(f"Unknown introductory stage: {stage}")
     grids = []
-    for _ in range(2 if stage == "stairs" else 1):
+    for _ in range(2 if stage == "turns" else 1):
         width, height = rng.choice(((35, 25), (39, 29), (43, 31)))
         grid = Map_Grid(width, height, CellType.EMPTY)
         for x in range(width):
@@ -26,7 +26,7 @@ def generate_curriculum_building(simulation, rng, stage):
             _add_switchbacks(grid, rng, barriers=rng.randint(1, 2))
         _add_exits(grid, rng, count=1)
         grids.append(grid)
-    endpoints = [_add_stair_patch(grid, rng) for grid in grids] if stage == "stairs" else []
+    endpoints = [_add_stair_patch(grid, rng) for grid in grids] if stage == "turns" else []
     for grid in grids:
         simulation.grid_world.add_floor_from_map(grid)
     if endpoints:

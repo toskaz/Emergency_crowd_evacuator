@@ -6,12 +6,8 @@ import numpy as np
 from gymnasium import spaces
 
 from controls.action import Action
-from controls.drone_dqn import (
-    CHANNELS,
-    PATCH_SIZE,
-    N_STEP,
-    DQNDroneController,
-)
+from controls.drone_dqn import N_STEP, DQNDroneController
+from controls.drone_escort_rl import EscortDroneController
 from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
 from controls.scripted_drone import ScriptedDroneController
@@ -39,15 +35,20 @@ MAX_LAYOUT_ATTEMPTS = 8
 
 
 class DroneNavigationEnv(gym.Env):
-    def __init__(self, max_episode_steps=None, layout_mode="mixed", training=True, path_only=False, n_step=N_STEP,
-                 path_following=False):
+    def __init__(self, max_episode_steps=None, layout_mode="mixed", training=True, path_only=False, n_step=None,
+                 path_following=False, astar_guided=False):
         super().__init__()
         if path_following and not path_only:
             raise ValueError("Path-following rewards require path-only pretraining")
+        if astar_guided and path_following:
+            raise ValueError("Choose either A* guidance or legacy path-following rewards")
+        if n_step is None:
+            n_step = 1 if astar_guided else N_STEP
         if layout_mode not in ("mixed", "image", *LAYOUT_KINDS):
             raise ValueError(f"Unknown training layout mode: {layout_mode}")
         self.layout_mode = layout_mode
         self.path_only = path_only
+        self.astar_guided = astar_guided
         self.layout_name = "image"
         self.curriculum_stage = None
         self.is_evaluation = not training
@@ -59,7 +60,10 @@ class DroneNavigationEnv(gym.Env):
             floor_id: [cell for exit_cells in floor.map_grid.exits for cell in exit_cells]
             for floor_id, floor in self.simulation.grid_world.floors.items()
         }
-        self.controller = DQNDroneController(training=training, n_step=n_step, path_following=path_following)
+        self.controller = (
+            EscortDroneController(training=training, n_step=n_step, path_only=path_only) if astar_guided
+            else DQNDroneController(training=training, n_step=n_step, path_following=path_following)
+        )
         self.controller.path_only = path_only
         self.coordinator = GlobalCoordinator(self.simulation.grid_world)
         self.evacuee_controller = QLearningFollowController()
@@ -67,12 +71,16 @@ class DroneNavigationEnv(gym.Env):
         self.other_drone_controller = ScriptedDroneController()
         self.fixed_episode_steps = max_episode_steps
         self.max_episode_steps = max_episode_steps if max_episode_steps is not None else DEFAULT_MAX_EPISODE_STEPS
-        self.observation_space = spaces.Box(
+        patch = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(CHANNELS, PATCH_SIZE, PATCH_SIZE),
+            shape=self.controller.observation_shape,
             dtype=np.float32,
         )
+        self.observation_space = spaces.Dict({
+            "map": patch,
+            "features": spaces.Box(-1.0, 1.0, (self.controller.feature_count,), dtype=np.float32),
+        }) if astar_guided else patch
         self.action_space = spaces.Discrete(len(Action))
         self.drone = None
         self.routes = {}
@@ -99,7 +107,8 @@ class DroneNavigationEnv(gym.Env):
                     raise
 
     def _reset_episode(self, rng, options):
-        if self.path_only:
+        solo_episode = self.path_only or bool(options.get("solo_rehearsal", False))
+        if solo_episode:
             if options.get("evacuee_count", 0) != 0 or options.get("drone_count", 1) != 1:
                 raise ValueError("Path-only episodes require zero evacuees and exactly one drone")
             options = dict(options, evacuee_count=0, drone_count=1)
@@ -113,7 +122,7 @@ class DroneNavigationEnv(gym.Env):
         requested_floor = options.get("floor_id")
         floor_id = requested_floor if requested_floor is not None else rng.choice(floor_ids)
         self.requires_stairs = options.get(
-            "require_stairs", self.curriculum_stage == "stairs" if introductory
+            "require_stairs", self.curriculum_stage == "turns" if introductory
             else bool(self.stair_links) and rng.random() < 0.8
         )
         self.exit_floor_id = None
@@ -155,7 +164,7 @@ class DroneNavigationEnv(gym.Env):
         if introductory:
             if drone_count != 1 or self.crowd_distribution != "clustered":
                 raise ValueError("Introductory lessons use one drone and a visible group")
-            distances = {"basic": (20, 30), "turns": (30, 65), "stairs": (30, 80)}
+            distances = {"basic": (20, 30), "turns": (30, 80)}
             place_curriculum_scenario(
                 self.simulation, rng, evacuee_count, floor_id,
                 *distances[self.curriculum_stage],
@@ -180,6 +189,8 @@ class DroneNavigationEnv(gym.Env):
             self.simulation.drones
         )
         self.controller.reset()
+        if self.astar_guided:
+            self.controller.solo_episode = solo_episode
         self.step_count = 0
         self.position_history = deque([
             (self.drone.floor_id, self.drone.grid_x, self.drone.grid_y)
@@ -194,6 +205,8 @@ class DroneNavigationEnv(gym.Env):
         self.route_change_step = options.get("route_change_step", scheduled_change)
         if self.route_change_step is not None and self.route_change_step < 1:
             raise ValueError("route_change_step must be positive or None")
+        if self.astar_guided:
+            self.evacuee_actions = self.evacuee_controller.get_actions(self.simulation)
         observation, self.route_ids = self.controller._observe(
             self.simulation, self.drone, self.routes[self.drone]
         )
@@ -212,10 +225,12 @@ class DroneNavigationEnv(gym.Env):
         if self.fixed_episode_steps is None:
             self.max_episode_steps = max(
                 DEFAULT_MAX_EPISODE_STEPS,
-                int(8 * self.initial_route_distance + 20 * self.initial_evacuee_count),
+                int(8 * self.initial_route_distance + (0 if self.astar_guided else 20 * self.initial_evacuee_count)),
             )
-            if self.curriculum_stage in ("basic", "turns"):
-                self.max_episode_steps = 400 if self.curriculum_stage == "basic" else 500
+            if self.curriculum_stage == "basic":
+                self.max_episode_steps = 400
+            elif self.curriculum_stage == "mixed":
+                self.max_episode_steps = max(1, int(self.max_episode_steps * 0.75))
         return observation, {
             "action_mask": self.action_mask(),
             "requires_stairs": self.requires_stairs,
@@ -238,7 +253,10 @@ class DroneNavigationEnv(gym.Env):
         world = self.simulation.grid_world
         original = {drone: list(route) for drone, route in self.routes.items()}
         route = original[self.drone]
-        cursor = max(0, self.controller.route_cursors.get(self.drone, 0) - 1)
+        if self.astar_guided:
+            cursor = self.controller.guide.route_cursors.get(self.drone, 0)
+        else:
+            cursor = max(0, self.controller.route_cursors.get(self.drone, 0) - 1)
         for first, second in list(zip(route, route[1:]))[cursor:cursor + 3]:
             if first[0] != second[0]:
                 continue
@@ -317,13 +335,7 @@ class DroneNavigationEnv(gym.Env):
         self.coordinator = GlobalCoordinator(world)
 
     def action_mask(self):
-        legal_actions = set(
-            self.controller._legal_actions(self.simulation, self.drone)
-        )
-        return np.array(
-            [Action(action) in legal_actions for action in range(len(Action))],
-            dtype=np.int8,
-        )
+        return self.controller.action_mask(self.simulation, self.drone)
 
     def select_action(self, observation):
         legal_actions = self.controller._legal_actions(self.simulation, self.drone)
@@ -349,7 +361,8 @@ class DroneNavigationEnv(gym.Env):
         )
         previous_floor_id = self.drone.floor_id
 
-        evacuee_actions = self.evacuee_controller.get_actions(self.simulation)
+        evacuee_actions = (self.evacuee_actions if self.astar_guided
+                            else self.evacuee_controller.get_actions(self.simulation))
         drone_actions = [
             action if drone is self.drone
             else self.other_drone_controller.choose_action(self.simulation, drone)
@@ -358,16 +371,25 @@ class DroneNavigationEnv(gym.Env):
         self.simulation.step(evacuee_actions, drone_actions)
         self.stair_transitions += self.drone.floor_id != previous_floor_id
         self.step_count += 1
-        components = self.controller.reward_components(self.simulation, self.drone, transition)
-        reward = sum(components.values())
         subgoal_reached = (self.controller.path_following
                            and self.controller.reached_route_subgoal(self.simulation, self.drone, transition))
         self.subgoals_completed += subgoal_reached
         success = self.controller.mission_finished(self.simulation, self.drone)
         terminated = success or self.controller.mission_failed(self.simulation, self.drone)
         truncated = self.step_count >= self.max_episode_steps and not terminated
+        if self.astar_guided:
+            components = self.controller.reward_components(self.simulation, self.drone, transition, timed_out=truncated)
+        else:
+            components = self.controller.reward_components(self.simulation, self.drone, transition)
+        reward = sum(components.values())
+        route_changed = False
+        if self.astar_guided and not terminated and not truncated:
+            if self.step_count == self.route_change_step:
+                route_changed = self.replan_for_blocked_passage()
+            self.evacuee_actions = self.evacuee_controller.get_actions(self.simulation)
         if self.controller.training:
-            self.controller.learn(self.simulation, self.routes)
+            outcomes = {self.drone: (reward, success, terminated or truncated)} if self.astar_guided else None
+            self.controller.learn(self.simulation, self.routes, outcomes=outcomes)
             if truncated:
                 self.controller.finish_episode()
         else:
@@ -378,8 +400,8 @@ class DroneNavigationEnv(gym.Env):
             self.drone_exit_step = self.step_count
         if self.initial_group and self.group_exit_step is None and self.controller.group_finished(self.simulation, self.drone):
             self.group_exit_step = self.step_count
-        route_changed = (not terminated and not truncated and self.step_count == self.route_change_step
-                         and self.replan_for_blocked_passage())
+        if not self.astar_guided and not terminated and not truncated and self.step_count == self.route_change_step:
+            route_changed = self.replan_for_blocked_passage()
         next_observation, self.route_ids = self.controller._observe(
             self.simulation, self.drone, self.routes[self.drone]
         )

@@ -140,7 +140,7 @@ class ProgramState:
 
     def status_lines(self, context):
         mode = (
-            "CNN-DQN + cluster route"
+            ("A* + RL" if context.simulation_options.rl_drones else "A*")
             if context.simulation_options.autonomous_drones
             else "manual"
         )
@@ -164,6 +164,8 @@ class ProgramState:
             f"Step: {context.simulation.step_count if context.simulation else 0}",
             f"Evacuated: {evacuated}/{total}",
         ]
+        if getattr(context, "drone_mode_notice", ""):
+            lines.append(context.drone_mode_notice)
         world = context.simulation.grid_world if context.simulation else None
         if world and context.link_stairs_mode:
             if world.pending_stair_endpoint is not None:
@@ -2477,7 +2479,7 @@ class SimulationRunningState(ProgramState):
     can_pan = True
     render_options_enabled = True
     floor_switch_enabled = True
-    key_bindings = ()
+    key_bindings = ("L: Toggle A* / RL drones",)
 
     def __init__(self):
         self._floor_tabs = {}
@@ -2734,6 +2736,8 @@ class SimulationRunningState(ProgramState):
             program.transition_to(ResultsState())
         elif key == pygame.K_f:
             program.simulation_options.autonomous_drones = not program.simulation_options.autonomous_drones
+        elif key == pygame.K_l:
+            program.toggle_drone_policy()
         elif key == pygame.K_r:
             program.simulation_options.rl_evacuees = not program.simulation_options.rl_evacuees
         elif key == pygame.K_w:
@@ -2759,10 +2763,7 @@ class SimulationRunningState(ProgramState):
             evacuee_actions = get_actions(program.simulation.evacuees, options.action)
 
         if options.autonomous_drones:
-            drone_actions = program.drone_controller.get_actions(
-                program.simulation,
-                program.drone_routes,
-            )
+            drone_actions = program.autonomous_drone_actions()
         else:
             drone_actions = get_actions(program.simulation.drones, options.action)
 

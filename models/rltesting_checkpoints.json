@@ -1,0 +1,43 @@
+{
+  "checkpoints": [
+    {
+      "file": "models/drone_solo_best.pt",
+      "source": "training_runs/drone_path_20261122_194023_UTC/best.pt",
+      "role": "best solo navigator",
+      "episodes_completed": 250,
+      "stage": "mixed",
+      "reward_version": 10,
+      "discount": 0.0,
+      "best_scores": {
+        "basic": [
+          1.0,
+          -25.16,
+          1.0
+        ],
+        "turns": [
+          1.0,
+          -60.7,
+          1.0
+        ],
+        "mixed": [
+          0.98,
+          -132.9387755102041,
+          0.98
+        ]
+      },
+      "sha256": "de237fd379a42abe19e1f0e618af0a0aca60f4818344432667f23810fe80df0d"
+    },
+    {
+      "file": "models/drone_astar_escort.pt",
+      "source": "training_runs/people_turns_retention_gamma099/latest.pt",
+      "role": "experimental people-aware snapshot",
+      "episodes_completed": 100,
+      "stage": "turns",
+      "reward_version": 16,
+      "discount": 0.99,
+      "best_scores": {},
+      "sha256": "79d5498cc74de45e4f26d8cb60e6215727c051c48962b4566a1991e0c4155543"
+    }
+  ],
+  "notes": "The solo model scored 49/50 on its saved mixed evaluation. The people-aware snapshot has no qualifying best score and has exhibited oscillation; it is experimental."
+}

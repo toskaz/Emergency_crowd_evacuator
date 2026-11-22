@@ -11,7 +11,7 @@ from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from simulation import Simulation
-from utils.config import drawing_size, q_table_path
+from utils.config import drawing_size, escort_drone_model_path, q_table_path
 from utils.program_state import MainMenuState
 import utils.config as config
 
@@ -41,6 +41,7 @@ class SimulationOptions:
     action: Action = Action.STAY
     autonomous_drones: bool = True
     rl_evacuees: bool = True
+    rl_drones: bool = False
 
 
 class ProgramContext:
@@ -55,6 +56,8 @@ class ProgramContext:
         self.simulation = None
         self.window = None
         self.drone_controller = None
+        self.rl_drone_controller = None
+        self.drone_mode_notice = ""
         self.rl_evacuee_controller = None
         self.coordinator = None
         self.imported_image_path = None
@@ -98,6 +101,32 @@ class ProgramContext:
         self.rl_evacuee_controller = QLearningFollowController()
         self.rl_evacuee_controller.load(q_table_path)
         self.coordinator = GlobalCoordinator(self.simulation.grid_world)
+
+    def toggle_drone_policy(self):
+        options = self.simulation_options
+        self.drone_mode_notice = ""
+        if options.rl_drones:
+            options.rl_drones = False
+            self.drone_controller.reset()
+            return
+        if self.rl_drone_controller is None:
+            if not Path(escort_drone_model_path).is_file():
+                self.drone_mode_notice = "Notice: Train an A* + RL drone model before selecting RL."
+                return
+            from controls.drone_escort_rl import EscortDroneController
+
+            controller = EscortDroneController(training=False)
+            if not controller.load(escort_drone_model_path):
+                self.drone_mode_notice = "Notice: The A* + RL drone model is incompatible."
+                return
+            self.rl_drone_controller = controller
+        self.rl_drone_controller.reset()
+        options.autonomous_drones = True
+        options.rl_drones = True
+
+    def autonomous_drone_actions(self):
+        controller = self.rl_drone_controller if self.simulation_options.rl_drones else self.drone_controller
+        return controller.get_actions(self.simulation, self.drone_routes)
 
     def initialize_world(self, map_grid):
         if self.simulation is None:
@@ -176,11 +205,15 @@ class ProgramContext:
         self.drone_routes = self.coordinator.plan_initial_routes(
             self.simulation.drones
         )
+        if self.rl_drone_controller is not None:
+            self.rl_drone_controller.reset()
 
     def replan_drone_routes_after_hazard(self):
         if self.coordinator is None or not self.simulation:
             return
-        self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
+        self.drone_routes, _ = self.coordinator.on_environment_changed(
             self.simulation.drones
         )
         self.drone_controller.invalidate()
+        if self.rl_drone_controller is not None:
+            self.rl_drone_controller.invalidate()
