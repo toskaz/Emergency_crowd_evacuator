@@ -2,7 +2,7 @@ from colorsys import hsv_to_rgb
 from enum import Enum
 
 class Color(Enum):
-    EMPTY = (244, 245, 245)
+    EMPTY = (232, 236, 241)
     WALL = (32, 34, 37)
     EVACUEE = (59, 130, 246)
     DRONE = (220, 20, 60)
@@ -10,7 +10,7 @@ class Color(Enum):
     STAIRS = (245, 158, 11)
     DOOR = (160, 90, 210)
     TEMPORARY_WALL = (220, 85, 55)
-    GRID = (225, 226, 229)
+    GRID = (218, 223, 230)
     NAVIGATION = (240, 150, 40)
     BACKGROUND = (22, 22, 22)
     TOPNAV_BG = (30, 30, 30)

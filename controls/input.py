@@ -20,7 +20,12 @@ def handle_input(context):
                 context.window.close()
             context.running = False
 
-        elif event.type in (pygame_gui.UI_BUTTON_PRESSED, pygame_gui.UI_TEXT_ENTRY_FINISHED):
+        elif event.type in (
+            pygame_gui.UI_BUTTON_PRESSED,
+            pygame_gui.UI_TEXT_ENTRY_FINISHED,
+            pygame_gui.UI_DROP_DOWN_MENU_CHANGED,
+            pygame_gui.UI_WINDOW_CLOSE,
+        ):
             context.state.handle_ui_event(context, event)
 
         elif not consumed:
@@ -28,6 +33,9 @@ def handle_input(context):
                 context.state.handle_key_event(context, event.key)
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 context.state.handle_mouse(context, event)
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if hasattr(context.state, 'handle_mouse_up'):
+                    context.state.handle_mouse_up(context, event)
             elif event.type == pygame.MOUSEMOTION:
                 if hasattr(context.state, 'handle_mouse_motion'):
                     context.state.handle_mouse_motion(context, event)

@@ -20,14 +20,14 @@ def find_path_multi_target_astar(G, source_nodes, target_node, floors=None):
                 source=target_node,
                 target=exit_node,
                 heuristic=lambda u, v: scaled_euclidean_heuristic(u, v, floors),
-                # weight='weight' # TODO: dodac wagi krawedzi (przepustowosc i zagrozenia)
+                weight='weight', # TODO: trzeba dodac wagi jak bedzie Flow Rate
             )
 
-            distance = float(len(path) - 1)
+            distance = float(nx.path_weight(G, path, weight='weight'))
             if distance < best_distance:
                 best_distance, best_path = distance, path
 
-        except nx.NetworkXNoPath:
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
             continue
 
     return best_distance, best_path

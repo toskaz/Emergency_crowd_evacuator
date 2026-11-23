@@ -33,6 +33,7 @@ class Grid_World:
         self.pending_stair_endpoint = None
         self.stair_link_error = None
         self.stair_link_notice = None
+        self.stair_link_notice_time = 0.0
         self.changed_floor_ids = set()
         self.navigation_graph = None
         self.drone_ids = {}
@@ -88,6 +89,7 @@ class Grid_World:
         self.pending_stair_endpoint = None
         self.stair_link_error = None
         self.stair_link_notice = None
+        self.stair_link_notice_time = 0.0
         self.changed_floor_ids = set()
         self.navigation_graph = None
         self.drone_ids = {}
@@ -492,6 +494,64 @@ class Grid_World:
             self._log_stair_link(first_node, second_node)
         self.rebuild_navigation()
         return True
+
+    def disconnect_stair_cluster(self, node):
+        cluster = self._get_stair_cluster(node)
+        if cluster is None or cluster.linked_to is None:
+            return False
+        partner_node = cluster.linked_to
+        partner_cluster = self._get_stair_cluster(partner_node)
+        cluster.linked_to = None
+        if partner_cluster is not None and partner_cluster.linked_to == node:
+            partner_cluster.linked_to = None
+        self.rebuild_navigation()
+        return True
+
+    def get_stair_clusters(self, floor_id):
+        floor = self.floors.get(floor_id)
+        if not floor or not hasattr(floor, "cluster_grid") or not floor.cluster_grid:
+            return []
+        return [
+            (cid, c) for cid, c in enumerate(floor.cluster_grid.clusters)
+            if c.type is ClusterType.STAIRS and c.cells
+        ]
+
+    def get_stair_name(self, floor_id, cluster_id):
+        clusters = self.get_stair_clusters(floor_id)
+        for idx, (cid, _) in enumerate(clusters, start=1):
+            if cid == cluster_id:
+                return f"Stairs {idx}"
+        return f"Stairs C{cluster_id}"
+
+    def get_stair_badge(self, floor_id, cluster_id):
+        clusters = self.get_stair_clusters(floor_id)
+        for idx, (cid, _) in enumerate(clusters, start=1):
+            if cid == cluster_id:
+                return f"S{idx}"
+        return f"S{cluster_id}"
+
+    def get_exit_clusters(self, floor_id):
+        floor = self.floors.get(floor_id)
+        if not floor or not hasattr(floor, "cluster_grid") or not floor.cluster_grid:
+            return []
+        return [
+            (cid, c) for cid, c in enumerate(floor.cluster_grid.clusters)
+            if c.type is ClusterType.EXIT and c.cells
+        ]
+
+    def get_exit_name(self, floor_id, cluster_id):
+        clusters = self.get_exit_clusters(floor_id)
+        for idx, (cid, _) in enumerate(clusters, start=1):
+            if cid == cluster_id:
+                return f"Exit {idx} (F{floor_id + 1})"
+        return f"Exit (F{floor_id + 1})"
+
+    def get_exit_badge(self, floor_id, cluster_id):
+        clusters = self.get_exit_clusters(floor_id)
+        for idx, (cid, _) in enumerate(clusters, start=1):
+            if cid == cluster_id:
+                return f"E{idx}"
+        return "E"
 
     def rebuild_navigation(self):
         self.navigation_graph = NavigationGraphx(self.floors)

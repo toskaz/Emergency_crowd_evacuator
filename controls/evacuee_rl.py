@@ -67,6 +67,8 @@ class QLearningFollowController:
     def get_actions(self, simulation):
         leaders = find_leaders(simulation)
         for evacuee, leader in leaders.items():
+            if leader is not None:
+                evacuee.has_been_guided = True
             while leader in leaders:
                 leader = leaders[leader]
             self.last_seen[evacuee] = (leader.floor_id, leader.grid_x, leader.grid_y)

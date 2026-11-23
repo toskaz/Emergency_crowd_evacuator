@@ -1,6 +1,7 @@
 from map.cell import CellType
 from graphics.colors import Color, assignment_color
 import pygame
+import pygame.gfxdraw
 from editor.tool import Tool
 from grids.cluster import ClusterType
 from grids.coordinates import grid_to_pixel, grid_to_pixel_center
@@ -51,12 +52,9 @@ def draw_map(screen, grid, show_grid):
 
             marker_color = ENTITY_COLORS.get(value)
             if marker_color is not None:
-                pygame.draw.circle(
-                    screen,
-                    marker_color,
-                    grid_to_pixel_center(x, y),
-                    config.drawing_size // 2,
-                )
+                cx, cy = grid_to_pixel_center(x, y)
+                radius = max(2, config.drawing_size // 2)
+                pygame.draw.circle(screen, marker_color, (cx, cy), radius)
 
             if show_grid:
                 pygame.draw.rect(
@@ -71,12 +69,14 @@ def draw_assignment_groups(screen, simulation, floor_id):
     for evacuee in simulation.evacuees:
         if evacuee.floor_id != floor_id:
             continue
-        pygame.draw.circle(
-            screen,
-            assignment_color(evacuee.assigned_drone_id),
-            grid_to_pixel_center(evacuee.grid_x, evacuee.grid_y),
-            config.drawing_size // 2,
-        )
+        cx, cy = grid_to_pixel_center(evacuee.grid_x, evacuee.grid_y)
+        radius = max(2, config.drawing_size // 2)
+        color = assignment_color(evacuee.assigned_drone_id)
+        try:
+            pygame.gfxdraw.filled_circle(screen, cx, cy, radius, color)
+            pygame.gfxdraw.aacircle(screen, cx, cy, radius, color)
+        except Exception:
+            pygame.draw.circle(screen, color, (cx, cy), radius)
 
     for drone in simulation.drones:
         if drone.floor_id != floor_id:
@@ -113,12 +113,15 @@ def draw_temporary_walls(screen, grid):
 
 
 def draw_map_scale(screen, font, top_left=None, bottom_left=None, cell_size_m=0.6):
+    box_w = 154
+    box_h = 56
+
     cells_count = 5
+    max_bar_px = box_w - 44
+    if cells_count * config.drawing_size > max_bar_px:
+        cells_count = max(1, max_bar_px // config.drawing_size)
     real_dist_m = cells_count * cell_size_m
     line_px = int(cells_count * config.drawing_size)
-
-    box_w = max(line_px + 40, 154)
-    box_h = 50
 
     if top_left is not None:
         x, y = top_left
@@ -138,10 +141,10 @@ def draw_map_scale(screen, font, top_left=None, bottom_left=None, cell_size_m=0.
     else:
         scale_title = f"SCALE: 1 cell = {cell_size_m * 100:.0f}cm"
     title_lbl = font.render(scale_title, True, (220, 220, 220))
-    screen.blit(title_lbl, (x + 14, y + 5))
+    screen.blit(title_lbl, (x + 14, y + 6))
 
     bar_x = x + 14
-    bar_y = y + 26
+    bar_y = y + 28
     bar_h = 6
 
     mid_px = line_px // 2
@@ -251,7 +254,7 @@ def draw_legend(screen, font, top_left=None, bottom_left=None):
         ("Exit", Color.EXIT.value, False),
         ("Stairs", Color.STAIRS.value, False),
         ("Evacuee", Color.EVACUEE.value, True),
-        ("Agent", Color.DRONE.value, True),
+        ("Guide Agent", Color.DRONE.value, True),
         ("Hazard", Color.TEMPORARY_WALL.value, False),
     ]
 
@@ -293,7 +296,8 @@ def draw_legend(screen, font, top_left=None, bottom_left=None):
             pygame.draw.rect(screen, (80, 80, 80), (x + pad_x, center_y - 5, 11, 11), 1, border_radius=2)
 
         txt = font.render(name, True, (225, 225, 225))
-        screen.blit(txt, (x + pad_x + 20, cur_y + 1))
+        txt_y = center_y - txt.get_height() // 2
+        screen.blit(txt, (x + pad_x + 20, txt_y))
         cur_y += item_h
 
     return total_h
@@ -304,9 +308,9 @@ def draw_building_elevation(screen, font, small_font, world, top_left=None, bott
         return 0
 
     num_floors = len(world.floors)
-    box_w = 168
+    box_w = 154
     floor_row_h = 32
-    box_h = 34 + (num_floors - 1) * floor_row_h + 18
+    box_h = 42 + (num_floors - 1) * floor_row_h + 18
 
     if bottom_left is not None:
         x, bl_y = bottom_left
@@ -324,7 +328,7 @@ def draw_building_elevation(screen, font, small_font, world, top_left=None, bott
     pygame.draw.rect(bg, (55, 55, 55, 225), bg.get_rect(), 1, border_radius=7)
     screen.blit(bg, (x, y))
 
-    title = font.render("BUILDING PROFILE", True, (170, 170, 170))
+    title = small_font.render("BUILDING PROFILE", True, (170, 170, 170))
     screen.blit(title, (x + 12, y + 8))
 
     active_id = getattr(world, "active_floor_id", 0)
@@ -394,7 +398,7 @@ def draw_ui(screen, font, selected_tool=None, status_lines=(), key_bindings=(),
     if alert_lines:
         screen_w = screen.get_width()
         canvas_center_x = (screen_w - 280) // 2
-        banner_y = 96
+        banner_y = 128
         for line in alert_lines:
             display_text = line.strip()
             if not display_text:
@@ -511,7 +515,7 @@ def draw_clusters(screen, overlay_grid, alpha=110, font=None):
         screen.blit(label, label_rect)
 
 
-def draw_stair_highlights(screen, world, font=None, link_mode=False):
+def draw_stair_highlights(screen, world, font=None, link_mode=False, is_sim=False, simulation=None):
     if font is None:
         font = pygame.font.Font(None, 16)
 
@@ -534,26 +538,51 @@ def draw_stair_highlights(screen, world, font=None, link_mode=False):
         rect_h = (max_y - min_y + 1) * config.drawing_size
         box = pygame.Rect(rect_x - 2, rect_y - 2, rect_w + 4, rect_h + 4)
 
-        if is_pending:
-            box_color = (255, 230, 50)
-            box_width = 3
-            badge_text = f"C{cluster_id}: SELECTED"
-        elif cluster.linked_to is not None:
-            box_color = (16, 185, 129)
-            box_width = 2
-            t_floor, t_cid = cluster.linked_to
-            badge_text = f"C{cluster_id} -> F{t_floor + 1}:C{t_cid}"
+        s_badge = world.get_stair_badge(active_floor_id, cluster_id)
+
+        if is_sim:
+            in_transit = 0
+            if simulation:
+                for e in simulation.evacuees:
+                    if getattr(e, "in_stair_transit", False):
+                        target = getattr(e, "stair_target_cluster", None)
+                        origin = getattr(e, "stair_origin_cluster", None)
+                        if e.floor_id == active_floor_id and (target == cluster_id or origin == cluster_id):
+                            in_transit += 1
+
+            if in_transit > 0:
+                box_color = (245, 158, 11)
+                box_width = 2
+                badge_text = f"{s_badge} ({in_transit})"
+            elif cluster.linked_to is not None:
+                box_color = (16, 185, 129)
+                box_width = 1
+                badge_text = s_badge
+            else:
+                box_color = (120, 120, 120)
+                box_width = 1
+                badge_text = s_badge
         else:
-            box_color = (80, 200, 255) if link_mode else (239, 68, 68)
-            box_width = 2
-            badge_text = f"C{cluster_id}: UNLINKED"
+            if is_pending:
+                box_color = (255, 230, 50)
+                box_width = 3
+                badge_text = f"{s_badge}: SELECTED"
+            elif cluster.linked_to is not None:
+                box_color = (16, 185, 129)
+                box_width = 2
+                t_floor, t_cid = cluster.linked_to
+                t_badge = world.get_stair_badge(t_floor, t_cid)
+                badge_text = f"{s_badge} <-> F{t_floor + 1}:{t_badge}"
+            else:
+                box_color = (80, 200, 255) if link_mode else (239, 68, 68)
+                box_width = 2
+                badge_text = f"{s_badge}: UNLINKED"
 
         pygame.draw.rect(screen, box_color, box, box_width)
 
-        badge_surf = font.render(badge_text, True, box_color)
-        pad_x, pad_y = 6, 2
-        badge_w = badge_surf.get_width() + pad_x * 2
-        badge_h = badge_surf.get_height() + pad_y * 2
+        badge_surf = font.render(badge_text, True, (255, 255, 255))
+        badge_w = max(24, badge_surf.get_width() + 8)
+        badge_h = 16
 
         badge_x = box.centerx - badge_w // 2
         badge_y = box.top - badge_h - 2
@@ -562,7 +591,51 @@ def draw_stair_highlights(screen, world, font=None, link_mode=False):
 
         pill_rect = pygame.Rect(badge_x, badge_y, badge_w, badge_h)
         pill_surf = pygame.Surface((badge_w, badge_h), pygame.SRCALPHA)
-        pill_surf.fill((20, 20, 20, 230))
-        pygame.draw.rect(pill_surf, (45, 45, 45), pill_surf.get_rect(), 1, border_radius=4)
+        pill_surf.fill((20, 24, 30, 175))
+        pygame.draw.rect(pill_surf, box_color, pill_surf.get_rect(), 1, border_radius=4)
         screen.blit(pill_surf, pill_rect.topleft)
-        screen.blit(badge_surf, (badge_x + pad_x, badge_y + pad_y))
+        tx = badge_x + (badge_w - badge_surf.get_width()) // 2
+        ty = badge_y + (badge_h - badge_surf.get_height()) // 2
+        screen.blit(badge_surf, (tx, ty))
+
+
+def draw_exit_badges(screen, world, font=None):
+    if font is None:
+        font = pygame.font.Font(None, 15)
+
+    active_floor = world.active_floor
+    active_floor_id = world.active_floor_id
+
+    for cluster_id, cluster in enumerate(active_floor.cluster_grid.clusters):
+        if cluster.type is not ClusterType.EXIT or not cluster.cells:
+            continue
+
+        min_x = min(x for x, y in cluster.cells)
+        min_y = min(y for x, y in cluster.cells)
+        max_x = max(x for x, y in cluster.cells)
+        max_y = max(y for x, y in cluster.cells)
+
+        rect_x, rect_y = grid_to_pixel(min_x, min_y)
+        rect_w = (max_x - min_x + 1) * config.drawing_size
+        rect_h = (max_y - min_y + 1) * config.drawing_size
+        box = pygame.Rect(rect_x - 1, rect_y - 1, rect_w + 2, rect_h + 2)
+
+        e_badge = world.get_exit_badge(active_floor_id, cluster_id)
+
+        badge_surf = font.render(e_badge, True, (255, 255, 255))
+        badge_w = max(24, badge_surf.get_width() + 8)
+        badge_h = 16
+
+        badge_x = box.centerx - badge_w // 2
+        badge_y = box.top - badge_h - 2
+        if badge_y < 90:
+            badge_y = box.bottom + 2
+
+        pill_rect = pygame.Rect(badge_x, badge_y, badge_w, badge_h)
+        pill_surf = pygame.Surface((badge_w, badge_h), pygame.SRCALPHA)
+        pill_surf.fill((20, 24, 30, 175))
+        pygame.draw.rect(pill_surf, (16, 185, 129), pill_surf.get_rect(), 1, border_radius=4)
+        screen.blit(pill_surf, pill_rect.topleft)
+        tx = badge_x + (badge_w - badge_surf.get_width()) // 2
+        ty = badge_y + (badge_h - badge_surf.get_height()) // 2
+        screen.blit(badge_surf, (tx, ty))

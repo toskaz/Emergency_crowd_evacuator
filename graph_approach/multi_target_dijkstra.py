@@ -11,7 +11,7 @@ def find_path_multi_target_dijkstra(G, source_nodes, target_node):
             G,
             sources=source_nodes,
             target=target_node,
-            weight='weight',
+            weight='weight', # TODO: trzeba dodac wagi jak bedzie Flow Rate
         )
         return float(distance), path[::-1]
     except (nx.NetworkXNoPath, nx.NodeNotFound):

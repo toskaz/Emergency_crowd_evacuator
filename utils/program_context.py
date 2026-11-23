@@ -10,6 +10,7 @@ from controls.drone_astar import AStarDroneController
 from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
+from graphics.fonts import init_ui_manager_fonts
 from simulation import Simulation
 from utils.config import drawing_size, q_table_path
 from utils.program_state import MainMenuState
@@ -19,6 +20,7 @@ import utils.config as config
 logger = logging.getLogger(__name__)
 
 THEME_PATH = Path(__file__).resolve().parent.parent / "assets" / "ui" / "theme.json"
+LOGO_PATH = Path(__file__).resolve().parent.parent / "logo" / "logoSquare.png"
 MENU_WINDOW_SIZE = (1280, 800)
 CALIBRATION_WINDOW_SIZE = (1280, 800)
 MAIN_WINDOW_SIZE = (1280, 800)
@@ -48,9 +50,16 @@ class ProgramContext:
         pygame.init()
 
         self.screen = pygame.display.set_mode(MENU_WINDOW_SIZE, pygame.RESIZABLE)
-        pygame.display.set_caption("Emergency Crowd Evacuator")
+        pygame.display.set_caption("ARIADNE")
+        if LOGO_PATH.exists():
+            try:
+                icon_surf = pygame.image.load(str(LOGO_PATH))
+                pygame.display.set_icon(icon_surf)
+            except Exception:
+                pass
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
         self.ui_manager = pygame_gui.UIManager(MENU_WINDOW_SIZE, theme_path=theme_arg)
+        init_ui_manager_fonts(self.ui_manager)
 
         self.simulation = None
         self.window = None
@@ -64,6 +73,10 @@ class ProgramContext:
         self.drone_routes = {}
         self.link_stairs_mode = False
         self.same_height_for_all = True
+        self.routing_algorithm = "Dijkstra"
+        self.simulation_speed = "1x"
+        self.sim_accumulator = 0.0
+        self.time_delta = 0.0
         self.view_options = ViewOptions()
         self.simulation_options = SimulationOptions()
 
@@ -97,7 +110,7 @@ class ProgramContext:
         self.drone_controller = AStarDroneController()
         self.rl_evacuee_controller = QLearningFollowController()
         self.rl_evacuee_controller.load(q_table_path)
-        self.coordinator = GlobalCoordinator(self.simulation.grid_world)
+        self.coordinator = GlobalCoordinator(self.simulation.grid_world, routing_algorithm=self.routing_algorithm)
 
     def initialize_world(self, map_grid):
         if self.simulation is None:
@@ -111,6 +124,7 @@ class ProgramContext:
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
         if self.ui_manager is None:
             self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
+            init_ui_manager_fonts(self.ui_manager)
         else:
             self.ui_manager.set_window_resolution((screen_width, screen_height))
 
@@ -119,7 +133,7 @@ class ProgramContext:
         if self.drone_controller is None:
             self._load_controllers()
         else:
-            self.coordinator = GlobalCoordinator(self.simulation.grid_world)
+            self.coordinator = GlobalCoordinator(self.simulation.grid_world, routing_algorithm=self.routing_algorithm)
 
     def initialize_world_from_dict(self, data):
         self.simulation = Simulation()
@@ -131,6 +145,7 @@ class ProgramContext:
         theme_arg = str(THEME_PATH) if THEME_PATH.exists() else None
         if self.ui_manager is None:
             self.ui_manager = pygame_gui.UIManager((screen_width, screen_height), theme_path=theme_arg)
+            init_ui_manager_fonts(self.ui_manager)
         else:
             self.ui_manager.set_window_resolution((screen_width, screen_height))
 
@@ -139,7 +154,16 @@ class ProgramContext:
         if self.drone_controller is None:
             self._load_controllers()
         else:
-            self.coordinator = GlobalCoordinator(self.simulation.grid_world)
+            self.coordinator = GlobalCoordinator(self.simulation.grid_world, routing_algorithm=self.routing_algorithm)
+
+    def set_routing_algorithm(self, algorithm_name):
+        self.routing_algorithm = algorithm_name
+        if self.coordinator:
+            self.coordinator.set_routing_algorithm(algorithm_name)
+        if self.simulation and self.simulation.grid_world and hasattr(self.simulation.grid_world, "navigation_graph"):
+            self.simulation.grid_world.navigation_graph.algorithm = algorithm_name
+            self.simulation.grid_world.routing_algorithm = algorithm_name
+        self.plan_drone_routes()
 
     def update_window_for_active_floor(self):
         if self.simulation is None:
@@ -173,14 +197,21 @@ class ProgramContext:
     def plan_drone_routes(self):
         if self.coordinator is None or not self.simulation:
             return
+        if self.rl_evacuee_controller is not None and hasattr(self.rl_evacuee_controller, "path_cache"):
+            self.rl_evacuee_controller.path_cache.clear()
         self.drone_routes = self.coordinator.plan_initial_routes(
             self.simulation.drones
         )
+        if self.drone_controller is not None:
+            self.drone_controller.invalidate()
 
     def replan_drone_routes_after_hazard(self):
         if self.coordinator is None or not self.simulation:
             return
+        if self.rl_evacuee_controller is not None and hasattr(self.rl_evacuee_controller, "path_cache"):
+            self.rl_evacuee_controller.path_cache.clear()
         self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
             self.simulation.drones
         )
-        self.drone_controller.invalidate()
+        if self.drone_controller is not None:
+            self.drone_controller.invalidate()

@@ -12,6 +12,7 @@ class NavigationGraphx:
     def __init__(self, floors):
         self.floors = floors
         self.G = nx.Graph()
+        self.algorithm = "Dijkstra"
         self.rebuild_base_graph()
 
     def rebuild_base_graph(self):
@@ -32,7 +33,7 @@ class NavigationGraphx:
                         (floor_id, cluster_id), cluster.linked_to, weight=1
                     )
 
-    def distance_to_closest_source(self, source_nodes, target_node):
+    def distance_to_closest_source(self, source_nodes, target_node, algorithm=None):
         if target_node not in self.G:
             return math.inf, []
 
@@ -40,7 +41,11 @@ class NavigationGraphx:
         if not source_nodes:
             return math.inf, []
 
+        algo = algorithm or getattr(self, "algorithm", "Dijkstra")
+        if algo in ("A*", "A* (A-Star)"):
+            return find_path_multi_target_astar(self.G, source_nodes, target_node, self.floors)
+        elif algo == "Bidirectional Dijkstra":
+            return find_path_multi_target_bidirectional_dijkstra(self.G, source_nodes, target_node)
+        elif algo == "BFS":
+            return find_path_multi_target_bfs(self.G, source_nodes, target_node)
         return find_path_multi_target_dijkstra(self.G, source_nodes, target_node)
-        #return find_path_multi_target_bfs(self.G, source_nodes, target_node)
-        # return find_path_multi_target_astar(self.G, source_nodes, target_node, self.floors)
-        # return find_path_multi_target_bidirectional_dijkstra(self.G, source_nodes, target_node)

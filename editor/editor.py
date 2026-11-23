@@ -35,6 +35,9 @@ def place(simulation, grid_x, grid_y, selected_tool):
         cell_type = CellType.DRONE
     elif selected_tool == Tool.STAIRS:
         cell_type = CellType.STAIRS
+    elif selected_tool == Tool.ERASER:
+        erase(simulation, grid_x, grid_y)
+        return
     else:
         return
 
@@ -48,8 +51,13 @@ def place(simulation, grid_x, grid_y, selected_tool):
             return
 
     world.set_map_cell(world.active_floor_id, grid_x, grid_y, cell_type)
+    if cell_type in (CellType.EXIT, CellType.STAIRS) or current in (CellType.EXIT, CellType.STAIRS):
+        world.rebuild_changed_map_data()
 
 
 def erase(simulation, grid_x, grid_y):
     world = simulation.grid_world
+    current = world.map_grid.get(grid_x, grid_y)
     world.set_map_cell(world.active_floor_id, grid_x, grid_y, CellType.EMPTY)
+    if current in (CellType.EXIT, CellType.STAIRS):
+        world.rebuild_changed_map_data()
