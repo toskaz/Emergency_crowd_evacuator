@@ -6,3 +6,4 @@ torch
 gymnasium
 pygame_gui
 tqdm
+matplotlib

@@ -17,15 +17,15 @@ def find_path_multi_target_bidirectional_dijkstra(G, source_nodes, target_node):
                 G,
                 source=target_node,
                 target=exit_node,
-                # weight='weight' # TODO: dodac wagi krawedzi (przepustowosc i zagrozenia)
-            )
+                weight='weight', # TODO: trzeba dodac wagi jak bedzie Flow Rate
+             )
 
             distance = float(distance)
 
             if distance < best_distance:
                 best_distance, best_path = distance, path
 
-        except nx.NetworkXNoPath:
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
             continue
 
     return best_distance, best_path

@@ -15,6 +15,7 @@ class Program:
 
         while context.running:
             time_delta = clock.tick() / 1000.0
+            context.time_delta = time_delta
 
             handle_input(context)
 
