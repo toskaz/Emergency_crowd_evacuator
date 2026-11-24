@@ -6,6 +6,7 @@ from entities.drone import Drone
 from grids.door_flow import DoorFlow
 from map.cell import CellType
 from utils import config
+from utils.simulation_metrics import SimulationMetrics
 
 
 class Simulation:
@@ -21,6 +22,7 @@ class Simulation:
         self.prepared = False
         self.last_editor_error = None
         self.last_editor_error_timer = 0
+        self.metrics = SimulationMetrics()
 
     def prepare(self):
         self.grid_world.rebuild_changed_map_data()
@@ -60,6 +62,7 @@ class Simulation:
         self.reset_door_flow()
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.prepared = True
+        self.metrics.reset(self)
 
     def start(self):
         if self.started:
@@ -86,6 +89,7 @@ class Simulation:
 
         for evacuee in evacuated:
             self.grid_world.remove_evacuee(evacuee)
+            self.metrics.on_evacuee_escaped(evacuee, self.grid_world)
 
         self.evacuees[:] = [evacuee for evacuee in self.evacuees if evacuee not in evacuated]
         self.evacuated_count += len(evacuated)
@@ -102,6 +106,8 @@ class Simulation:
             self.reset_door_flow()
 
         for evacuee in self.evacuees:
+            if getattr(evacuee, "in_stair_transit", False):
+                continue
             fl = self.grid_world.floors.get(evacuee.floor_id)
             if fl and hasattr(fl, "heatmap_grid"):
                 cur_v = fl.heatmap_grid.get(evacuee.grid_x, evacuee.grid_y) or 0
@@ -118,3 +124,15 @@ class Simulation:
             self.grid_world.door_flow.end_tick(self.evacuees)
         self.grid_world.rebuild_simulation_grid(self.evacuees, self.drones)
         self.step_count += 1
+        self.metrics.update(self)
+
+    def get_step_duration_s(self):
+        if not self.grid_world or not self.grid_world.floors:
+            return 0.5
+        cell_sizes = [
+            getattr(f, "cell_size_m", 0.6)
+            for f in self.grid_world.floors.values()
+            if getattr(f, "cell_size_m", None) and 0.05 <= getattr(f, "cell_size_m", 0.6) <= 10.0
+        ]
+        cell_m = (sum(cell_sizes) / len(cell_sizes)) if cell_sizes else 0.6
+        return cell_m / 1.2

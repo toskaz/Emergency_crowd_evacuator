@@ -11,9 +11,17 @@ logger = logging.getLogger(__name__)
 
 
 class GlobalCoordinator:
-    def __init__(self, grid_world):
+    def __init__(self, grid_world, routing_algorithm="Dijkstra"):
         self.world = grid_world
         self.drone_routes = {}
+        self.routing_algorithm = routing_algorithm
+        if self.world and hasattr(self.world, "navigation_graph") and self.world.navigation_graph:
+            self.world.navigation_graph.algorithm = routing_algorithm
+
+    def set_routing_algorithm(self, algorithm_name):
+        self.routing_algorithm = algorithm_name
+        if self.world and hasattr(self.world, "navigation_graph") and self.world.navigation_graph:
+            self.world.navigation_graph.algorithm = algorithm_name
 
     def get_exit_nodes(self):
         return [
@@ -25,7 +33,9 @@ class GlobalCoordinator:
 
     def get_drone_cluster(self, drone):
         floor_id = getattr(drone, "floor_id", 0)
-        floor = self.world.floors[floor_id]
+        floor = self.world.floors.get(floor_id)
+        if floor is None:
+            return None
         cluster_grid = floor.cluster_grid
 
         cluster_id = cluster_grid.get(drone.grid_x, drone.grid_y)
@@ -62,7 +72,7 @@ class GlobalCoordinator:
 
         exit_nodes = self.get_exit_nodes()
         distance, route = self.world.navigation_graph.distance_to_closest_source(
-            exit_nodes, current_cluster_node
+            exit_nodes, current_cluster_node, algorithm=self.routing_algorithm
         )
 
         if math.isinf(distance) or not route:
@@ -97,21 +107,17 @@ class GlobalCoordinator:
         self.update_graph_passability()
 
         for drone in drones:
-            current_route = self.drone_routes.get(drone, [])
+            if getattr(drone, "in_stair_transit", False):
+                logger.debug("Coordinator: Drone %s is in stair transit; deferring replan until arrival.", drone)
+                continue
             drone_cluster = self.get_drone_cluster(drone)
+            if drone_cluster is None:
+                continue
 
-            if not self._is_remaining_route_passable(drone_cluster, current_route):
-                logger.info(
-                    "Coordinator: Remaining route for drone at %s is blocked! Calculating new path...",
-                    drone_cluster,
-                )
-                self.request_route(drone, drone_cluster)
+            old_route = self.drone_routes.get(drone, [])
+            new_route = self.request_route(drone, drone_cluster)
+            if new_route != old_route:
                 replanned_drones.append(drone)
-            else:
-                logger.debug(
-                    "Coordinator: Drone at %s can continue on its current route, hazard is behind or off-route.",
-                    drone_cluster,
-                )
 
         return self.drone_routes, replanned_drones
 

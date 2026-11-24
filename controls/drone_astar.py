@@ -93,8 +93,6 @@ class AStarDroneController:
         if routes is None:
             routes = self.coordinator.drone_routes
         else:
-            # Share the caller's route dictionary so recovery replans also reach
-            # the coordinator overlay and subsequent simulation steps.
             self.coordinator.drone_routes = routes
         active = set(simulation.drones)
         for drone in set(self._routes) - active:
@@ -115,6 +113,8 @@ class AStarDroneController:
         return actions
 
     def _choose_action(self, simulation, drone, routes):
+        if getattr(drone, "in_stair_transit", False):
+            return Action.STAY, None
         world = self._world
         position = self._position(drone)
         if world.is_exit(drone.grid_x, drone.grid_y, drone.floor_id):
@@ -213,9 +213,6 @@ class AStarDroneController:
                 self.planned_windows[drone] = window
                 return path
 
-        # A temporary wall can split a cluster internally while a detour through
-        # an off-route neighbor remains open. Widen the cell search before
-        # asking the coordinator to replace the cluster route.
         path = self._astar(start, initial_goals, None, None, occupied)
         if path:
             self.paths[drone] = path
@@ -237,8 +234,6 @@ class AStarDroneController:
         goals = goals - occupied
         if not goals or (allowed is not None and start not in allowed):
             return None
-        # Manhattan distance is admissible on a cardinal single-floor window.
-        # Stair links can shortcut geometry, so use zero across multiple floors.
         single_floor = (len(self._world.floors) == 1
                         or (allowed is not None
                             and all(cell[0] == start[0] for cell in allowed)))
@@ -354,7 +349,6 @@ class AStarDroneController:
         elif not waiting and gap > drone_lead_distance + 2:
             waiting, started = True, simulation.step_count
         if waiting and simulation.step_count - started >= drone_max_pacing_wait:
-            # A stranded person must not immobilize the guide permanently.
             waiting = False
         self._pacing[drone] = waiting, started
         return waiting

@@ -7,3 +7,4 @@ class Tool(IntEnum):
     EXIT = 3
     DRONE = 4
     STAIRS = 5
+    ERASER = 6

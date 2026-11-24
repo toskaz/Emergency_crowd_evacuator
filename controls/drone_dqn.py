@@ -148,6 +148,9 @@ class DQNDroneController:
         actions = []
 
         for drone in simulation.drones:
+            if getattr(drone, "in_stair_transit", False):
+                actions.append(Action.STAY)
+                continue
             world = simulation.grid_world
             floor = world.floors[drone.floor_id]
             if floor.map_grid.get(drone.grid_x, drone.grid_y) == CellType.EXIT:
