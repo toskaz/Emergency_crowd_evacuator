@@ -14,6 +14,12 @@ class Floor:
         self.map_grid = map_grid
         self.cell_size_m = getattr(map_grid, 'cell_size_m', 0.6)
         self.floor_height_m = float(floor_height_m)
+        self.plan_reference = getattr(map_grid, 'plan_reference', None)
+        self.reference_image = getattr(map_grid, 'reference_image', None)
+        self.reference_surface = None
+        self.view_drawing_size = None
+        self.view_camera_offset_x = None
+        self.view_camera_offset_y = None
         self.evacuee_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.drone_occupancy_grid = Grid(map_grid.width, map_grid.height, None)
         self.rebuild_map_data()

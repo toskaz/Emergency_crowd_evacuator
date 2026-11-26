@@ -15,12 +15,12 @@ import pygame_gui
 
 from controls.action import Action
 from controls.action_controller import get_actions
-from editor.editor import handle_map_editor
+from editor.editor import handle_map_editor, place
 from editor.tool import Tool
 from graphics.colors import Color
 from graphics.fonts import get_font
 from graphics.renderer import draw_building_elevation
-from grids.coordinates import pixel_to_grid
+from grids.coordinates import grid_to_pixel, grid_to_pixel_center, pixel_to_grid
 from grids.map_grid import Map_Grid
 from map.cell import CellType
 from simulation import Simulation
@@ -28,6 +28,30 @@ from utils.config import block_size, acceptance_threshold
 from map.image_extractor import (
     preprocess_floorplan_image,
     detect_grid_cells,
+)
+from map.floorplan_loader import (
+    ImportSettings,
+    SUPPORTED_FLOORPLAN_FILETYPES,
+    build_aligned_reference_surface,
+    build_preprocessed_for_floorplan,
+    compute_dxf_px_per_m,
+    compute_pdf_px_per_m,
+    compute_smart_block_size,
+    crop_loaded_floorplan,
+    load_floorplan,
+    numpy_bgr_to_pygame_surface,
+    reprocess_floorplan,
+    reset_crop_floorplan,
+    resolve_plan_source_path,
+    restore_reference_image,
+    rotate_loaded_floorplan,
+    sample_wall_at_loaded_coords,
+)
+from utils.ui_dialogs import (
+    AddFloorChoiceDialog,
+    DeleteFloorConfirmDialog,
+    DxfLayersDialog,
+    NoticeDialog,
 )
 
 MENU_WINDOW_SIZE = (1280, 800)
@@ -206,16 +230,72 @@ class ProgramState:
     def render(self, program):
         program.window.draw_simulation(program, self.key_bindings)
 
+    def _get_bottom_pill_rects(self, screen_w, screen_h):
+        canvas_w = max(100, screen_w - SIDEBAR_WIDTH)
+        pill_y = screen_h - 52
+        zoom_rect = pygame.Rect(canvas_w - 212 - 20, pill_y, 212, 38)
+        overlay_rect = pygame.Rect(zoom_rect.x - 12 - 192, pill_y, 192, 38)
+        return overlay_rect, zoom_rect
+
+    def _build_bottom_canvas_controls(self, mgr, screen_w, screen_h, overlay_on, has_ref, zoom_btn_id="#menu_button"):
+        overlay_rect, zoom_rect = self._get_bottom_pill_rects(screen_w, screen_h)
+        off_obj = "#nav_item_inactive" if (not has_ref or overlay_on) else "#btn_secondary"
+        on_obj = "#nav_item_active" if (has_ref and overlay_on) else "#nav_item_inactive"
+        self._btn_plan_overlay_off = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(overlay_rect.x + 96, overlay_rect.y + 4, 44, 30),
+            text="OFF",
+            manager=mgr,
+            object_id=off_obj,
+        )
+        self._btn_plan_overlay_on = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(overlay_rect.x + 144, overlay_rect.y + 4, 44, 30),
+            text="ON",
+            manager=mgr,
+            object_id=on_obj,
+        )
+        if not has_ref:
+            self._btn_plan_overlay_off.disable()
+            self._btn_plan_overlay_on.disable()
+        self._btn_zoom_out = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(zoom_rect.x + 4, zoom_rect.y + 4, 68, 30),
+            text="Zoom -",
+            manager=mgr,
+            object_id=zoom_btn_id,
+        )
+        self._btn_zoom_in = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(zoom_rect.x + 140, zoom_rect.y + 4, 68, 30),
+            text="Zoom +",
+            manager=mgr,
+            object_id=zoom_btn_id,
+        )
+        return overlay_rect, zoom_rect
+
+    def _draw_bottom_canvas_pills(self, screen, zoom_pct, has_ref):
+        screen_w, screen_h = screen.get_size()
+        overlay_rect, zoom_rect = self._get_bottom_pill_rects(screen_w, screen_h)
+        for r in (overlay_rect, zoom_rect):
+            pygame.draw.rect(screen, Color.CARD_BG.value, r, border_radius=7)
+            pygame.draw.rect(screen, Color.CARD_BORDER.value, r, 1, border_radius=7)
+        lbl_col = (220, 220, 220) if has_ref else (115, 115, 120)
+        ov_txt = self.small_font.render("Plan Overlay", True, lbl_col)
+        screen.blit(ov_txt, ov_txt.get_rect(left=overlay_rect.x + 10, centery=overlay_rect.centery))
+        zoom_txt = self.font.render(f"{zoom_pct}%", True, (240, 240, 240))
+        screen.blit(zoom_txt, zoom_txt.get_rect(center=zoom_rect.center))
+
     def handle_key_event(self, program, key):
         import utils.config as config
 
         if key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
             if getattr(self, "can_pan", False):
                 config.drawing_size = min(100, config.drawing_size + 2)
+                if hasattr(program, "save_active_floor_camera"):
+                    program.save_active_floor_camera()
             return
         if key in (pygame.K_MINUS, pygame.K_KP_MINUS):
             if getattr(self, "can_pan", False):
                 config.drawing_size = max(2, config.drawing_size - 2)
+                if hasattr(program, "save_active_floor_camera"):
+                    program.save_active_floor_camera()
             return
         if key == pygame.K_g:
             program.view_options.show_grid = not program.view_options.show_grid
@@ -241,15 +321,19 @@ class MainMenuState(ProgramState):
         self._import_button = None
         self._blank_button = None
         self._open_button = None
+        self._notice_dialog = None
 
     def enter(self, program):
         program.simulation = None
         program.imported_image_path = None
+        program.pending_floor_clone = None
+        program.view_options.show_plan_overlay = False
         program.drone_routes = {}
         program.link_stairs_mode = False
         self._import_button = None
         self._blank_button = None
         self._open_button = None
+        self._notice_dialog = None
         self._rebuild_ui(program)
 
     def _rebuild_ui(self, program):
@@ -266,7 +350,7 @@ class MainMenuState(ProgramState):
 
         self._import_button = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect(start_x + 18, cards_y + 138, card_w - 36, 36),
-            text="Import Image...",
+            text="Import Floorplan...",
             manager=program.ui_manager,
             object_id="#btn_secondary",
         )
@@ -286,6 +370,9 @@ class MainMenuState(ProgramState):
         )
 
     def exit(self, program):
+        if getattr(self, "_notice_dialog", None) is not None:
+            self._notice_dialog.kill()
+            self._notice_dialog = None
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
         self._import_button = None
@@ -293,15 +380,22 @@ class MainMenuState(ProgramState):
         self._open_button = None
 
     def handle_ui_event(self, program, event):
+        if getattr(self, "_notice_dialog", None) is not None:
+            if self._notice_dialog.handle_event(event) == "close":
+                self._notice_dialog.kill()
+                self._notice_dialog = None
+            return
+
         if event.ui_element == self._import_button:
             path = _open_file_dialog(
-                "Select Floorplan Image",
-                [("Images", "*.jpg *.png *.jpeg")],
+                "Select Floorplan",
+                SUPPORTED_FLOORPLAN_FILETYPES,
             )
             if path:
                 program.calibrated_floors = []
                 program.simulation = None
                 program.imported_image_path = path
+                program.pending_floor_clone = None
                 program.transition_to(CalibrationState())
 
         elif event.ui_element == self._blank_button:
@@ -319,7 +413,7 @@ class MainMenuState(ProgramState):
             if path:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                program.initialize_world_from_dict(data)
+                program.initialize_world_from_dict(data, project_path=path)
                 program.transition_to(EditorState())
 
     def handle_key_event(self, program, key):
@@ -369,7 +463,7 @@ class MainMenuState(ProgramState):
         screen.blit(title_surf, (screen_w // 2 - title_surf.get_width() // 2, 142))
 
         sub_surf = sub_font.render(
-            "Import a floorplan image, build a grid from scratch, or open a saved project",
+            "Import a DXF, PDF, or image floorplan, build a grid from scratch, or open a saved project",
             True,
             (150, 153, 159),
         )
@@ -384,23 +478,27 @@ class MainMenuState(ProgramState):
 
         cards_info = [
             (
-                "New from Floorplan Image",
-                "Convert a PNG or JPG floorplan into a walkable grid and calibrate scale.",
+                "New from Floorplan",
+                "DXF  •  PDF  •  PNG / JPG",
+                "Import a DXF, PDF, PNG, or JPG floorplan and calibrate scale.",
                 (43, 43, 43),
             ),
             (
                 "New Blank Grid",
+                None,
                 "Start with an empty architectural grid and draw walls, stairs, and exits manually.",
                 (43, 43, 43),
             ),
             (
                 "Open Project (.json)",
+                None,
                 "Load an existing multi-floor evacuation map, stair links, and simulation setup.",
                 (43, 43, 43),
             ),
         ]
 
-        for i, (title, desc, border_col) in enumerate(cards_info):
+        tag_font = get_font(11, bold=True)
+        for i, (title, fmt_tag, desc, border_col) in enumerate(cards_info):
             cx = start_x + i * (card_w + gap)
             card_rect = pygame.Rect(cx, cards_y, card_w, card_h)
             pygame.draw.rect(screen, (30, 30, 30), card_rect, border_radius=9)
@@ -408,6 +506,12 @@ class MainMenuState(ProgramState):
 
             t_surf = card_title_font.render(title, True, (240, 240, 242))
             screen.blit(t_surf, (cx + 18, cards_y + 18))
+
+            dy = cards_y + 50
+            if fmt_tag:
+                tag_surf = tag_font.render(fmt_tag, True, (56, 189, 248))
+                screen.blit(tag_surf, (cx + 18, cards_y + 44))
+                dy = cards_y + 64
 
             words = desc.split(" ")
             lines = []
@@ -422,7 +526,6 @@ class MainMenuState(ProgramState):
             if cur_line:
                 lines.append(cur_line)
 
-            dy = cards_y + 50
             for l in lines:
                 l_surf = card_desc_font.render(l, True, (165, 167, 173))
                 screen.blit(l_surf, (cx + 18, dy))
@@ -432,21 +535,99 @@ class MainMenuState(ProgramState):
         return ["State: main_menu"]
 
 
+def _delete_floor_from_world(program, deleted_idx):
+    sim = getattr(program, "simulation", None)
+    if sim is None or sim.grid_world is None:
+        return False
+    if not sim.grid_world.delete_floor(deleted_idx):
+        return False
+    sim.evacuees = [
+        ev for ev in sim.evacuees
+        if getattr(ev, "floor_id", 0) != deleted_idx
+    ]
+    for ev in sim.evacuees:
+        fid = getattr(ev, "floor_id", 0)
+        if fid > deleted_idx:
+            ev.floor_id = fid - 1
+    sim.drones = [
+        dr for dr in sim.drones
+        if getattr(dr, "floor_id", 0) != deleted_idx
+    ]
+    for dr in sim.drones:
+        fid = getattr(dr, "floor_id", 0)
+        if fid > deleted_idx:
+            dr.floor_id = fid - 1
+    program.drone_routes = {}
+    if getattr(program, "drone_controller", None) is not None:
+        program.drone_controller.reset()
+    return True
+
+
 class FloorCalibrationData:
-    def __init__(self, image_path, block_size=25, acceptance_threshold=0.40, px_per_m=None, floor_height_m=3.0):
+    def __init__(
+        self,
+        image_path,
+        block_size=None,
+        acceptance_threshold=0.40,
+        px_per_m=None,
+        floor_height_m=3.0,
+        page_index=0,
+        rotation_deg=0,
+        crop_rect=None,
+        settings=None,
+        detect_exits=None,
+        target_cell_meters=0.50,
+        inherit_scale=False,
+    ):
         self.image_path = image_path
-        self.raw_image = pygame.image.load(image_path).convert()
-        self.img_w, self.img_h = self.raw_image.get_size()
-        self.preprocessed = preprocess_floorplan_image(image_path)
-        self.block_size = block_size
-        self.acceptance_threshold = float(acceptance_threshold)
-        if px_per_m is not None and float(px_per_m) > 0:
+        self.target_cell_meters = max(0.05, float(target_cell_meters))
+        self.settings = settings if settings is not None else ImportSettings(sensitivity=float(acceptance_threshold))
+        self.settings.sensitivity = float(acceptance_threshold)
+        self.loaded = load_floorplan(
+            image_path,
+            page_index=page_index,
+            crop_rect=crop_rect,
+            rotation_deg=rotation_deg,
+            settings=self.settings,
+        )
+        self.acceptance_threshold = float(self.settings.sensitivity)
+        self.detect_exits = bool(detect_exits) if detect_exits is not None else False
+
+        self.show_original_plan = False
+        self.has_manual_scale = False
+        self.raw_image = None
+        self.ref_raw_image = None
+        self.img_w = 0
+        self.img_h = 0
+        self.preprocessed = None
+
+        if self.loaded.px_per_m is not None and self.loaded.px_per_m > 0:
+            self.px_per_m = float(self.loaded.px_per_m)
+        elif px_per_m is not None and float(px_per_m) > 0:
             self.px_per_m = float(px_per_m)
+            self.loaded.px_per_m = self.px_per_m
+            if inherit_scale and self.loaded.source_type in ("image", "scanned_pdf"):
+                self.loaded.has_native_scale = True
         else:
             self.px_per_m = 25.0 / 0.6
-        self.cell_size_m = self.block_size / self.px_per_m
+
+        self.sync_from_loaded(recompute_preprocessed=True)
+
+        if block_size is not None:
+            min_safe = max(8, int((max(1, self.img_w, self.img_h) + 189) // 190))
+            self.block_size = max(min_safe, int(block_size))
+        else:
+            self.block_size = compute_smart_block_size(
+                self.img_w,
+                self.img_h,
+                self.px_per_m if self.loaded.has_native_scale else None,
+                target_cell_meters=self.target_cell_meters,
+            )
+        self.slider_max_bs = max(50, self.block_size + 20)
         self.update_cell_size()
-        self.detect_exits = True
+        if block_size is not None:
+            self.target_cell_meters = float(self.cell_size_m)
+
         self.zoom_level = 1.0
         self.pan_offset_x = 0
         self.pan_offset_y = 0
@@ -455,6 +636,7 @@ class FloorCalibrationData:
         self.exit_cells = set()
         self.grid_dimensions = (0, 0)
         self.display_image = None
+        self.ref_display_image = None
         self.overlay_surface = None
         self.disp_x = 0
         self.disp_y = 0
@@ -463,11 +645,69 @@ class FloorCalibrationData:
         self.is_added_to_simulation = False
         self.floor_height_m = float(floor_height_m)
 
+    def sync_from_loaded(self, recompute_preprocessed=True):
+        self.raw_image = numpy_bgr_to_pygame_surface(self.loaded.extraction_image)
+        self.ref_raw_image = numpy_bgr_to_pygame_surface(self.loaded.reference_image)
+        self.img_w, self.img_h = self.raw_image.get_size()
+        if self.loaded.px_per_m is not None and self.loaded.px_per_m > 0:
+            self.px_per_m = float(self.loaded.px_per_m)
+        if recompute_preprocessed:
+            self.settings.sensitivity = float(self.acceptance_threshold)
+            self.preprocessed = build_preprocessed_for_floorplan(self.loaded, self.settings)
+
     def update_cell_size(self):
         if getattr(self, "px_per_m", 0) > 0:
             self.cell_size_m = self.block_size / self.px_per_m
         else:
             self.cell_size_m = (self.block_size / 25.0) * 0.6
+
+    def apply_target_cell_size(self, target_m=None):
+        if target_m is not None:
+            self.target_cell_meters = max(0.05, float(target_m))
+        min_safe = max(8, int((max(1, self.img_w, self.img_h) + 189) // 190))
+        if self.loaded.has_native_scale and self.px_per_m > 0:
+            raw_bs = int(round(self.target_cell_meters * self.px_per_m))
+        else:
+            raw_bs = int(round((self.target_cell_meters / 0.6) * 25.0))
+        self.slider_max_bs = max(50, raw_bs + 20)
+        self.block_size = max(min_safe, min(self.slider_max_bs, raw_bs))
+        self.update_cell_size()
+
+    def reset_manual_scale(self):
+        self.has_manual_scale = False
+        if self.loaded.source_type == "dxf":
+            self.loaded.px_per_m = compute_dxf_px_per_m(
+                self.loaded.pixels_per_source_unit,
+                self.loaded.dxf_units,
+            )
+            self.loaded.has_native_scale = True
+            self.px_per_m = self.loaded.px_per_m
+        elif self.loaded.source_type == "vector_pdf" and self.settings.pdf_scale_denom:
+            self.loaded.px_per_m = compute_pdf_px_per_m(
+                self.loaded.pixels_per_source_unit,
+                self.settings.pdf_scale_denom,
+            )
+            self.loaded.has_native_scale = True
+            self.px_per_m = self.loaded.px_per_m
+        else:
+            self.loaded.px_per_m = None
+            self.loaded.has_native_scale = False
+            self.px_per_m = 25.0 / 0.6
+        self.apply_target_cell_size()
+
+    def refresh_smart_block_size_after_crop(self):
+        min_safe = max(8, int((max(1, self.img_w, self.img_h) + 189) // 190))
+        if self.loaded.has_native_scale and self.px_per_m > 0:
+            self.block_size = compute_smart_block_size(
+                self.img_w,
+                self.img_h,
+                self.px_per_m,
+                target_cell_meters=self.target_cell_meters,
+            )
+        else:
+            self.block_size = max(min_safe, self.block_size)
+        self.slider_max_bs = max(50, self.block_size + 20)
+        self.update_cell_size()
 
 
 class CalibrationState(ProgramState):
@@ -482,14 +722,42 @@ class CalibrationState(ProgramState):
         self.measure_p1 = None
         self.measure_p2 = None
         self.last_measured_dist_px = 0.0
+        self.is_cropping = False
+        self.crop_p1 = None
+        self.crop_p2 = None
+        self.is_picking_color = False
 
         self._slider_block_size = None
         self._slider_sensitivity = None
+        self._slider_remove_thin = None
+        self._slider_pdf_thickness = None
+
         self._btn_coarse = None
         self._btn_standard = None
         self._btn_fine = None
         self._btn_measure_scale = None
         self._btn_reset_measure = None
+
+        self._btn_rot_left = None
+        self._btn_rot_right = None
+        self._btn_crop = None
+        self._btn_reset_crop = None
+        self._btn_plan_overlay_off = None
+        self._btn_plan_overlay_on = None
+
+        self._btn_dxf_layers = None
+        self._dxf_unit_buttons = {}
+        self._btn_page_prev = None
+        self._btn_page_next = None
+        self._btn_pdf_fixed = None
+        self._btn_pdf_filled_only = None
+        self._pdf_scale_buttons = {}
+
+        self._btn_pick_color = None
+        self._btn_pick_auto = None
+        self._btn_img_ignore_colors = None
+        self._btn_img_gray_blocks = None
+
         self._scale_input_window = None
         self._scale_entry_meters = None
         self._scale_btn_apply = None
@@ -502,14 +770,28 @@ class CalibrationState(ProgramState):
         self._height_same_all_btn = None
         self._height_btn_apply = None
         self._height_btn_cancel = None
+        self._add_floor_dialog = None
+        self._delete_floor_dialog = None
+        self._dxf_layers_dialog = None
+        self._notice_dialog = None
+
         self._generate_button = None
         self._btn_back = None
         self._btn_load_project = None
         self._btn_add_floor = None
+        self._btn_delete_floor = None
         self._btn_zoom_in = None
         self._btn_zoom_out = None
         self._floor_tab_buttons = []
         self.floors = []
+        self._panel_layout = {
+            "headers": [],
+            "dividers": [],
+            "sublabels": [],
+            "slider_headers": [],
+            "summary_card": None,
+            "page_label": None,
+        }
 
         logo_path = Path(__file__).resolve().parent.parent / "logo" / "logoSquare.png"
         self.logo_surf = None
@@ -520,15 +802,67 @@ class CalibrationState(ProgramState):
             except Exception:
                 self.logo_surf = None
 
+    def _clone_settings(self, src_settings: ImportSettings) -> ImportSettings:
+        from map.image_extractor import ImageFilterSettings
+        img_f = src_settings.image_filters
+        return ImportSettings(
+            sensitivity=src_settings.sensitivity,
+            image_filters=ImageFilterSettings(
+                mode=img_f.mode,
+                ignore_colors=img_f.ignore_colors,
+                gray_blocks=img_f.gray_blocks,
+                remove_thin_px=img_f.remove_thin_px,
+                picked_rgb=img_f.picked_rgb,
+                picked_lab=img_f.picked_lab,
+                sensitivity=img_f.sensitivity,
+            ),
+            dxf_selected_layers=set(src_settings.dxf_selected_layers) if src_settings.dxf_selected_layers is not None else None,
+            dxf_units=src_settings.dxf_units,
+            pdf_min_thickness_pt=src_settings.pdf_min_thickness_pt,
+            pdf_include_fixed=src_settings.pdf_include_fixed,
+            pdf_filled_walls_only=src_settings.pdf_filled_walls_only,
+            pdf_scale_denom=src_settings.pdf_scale_denom,
+        )
+
+    def _create_floor_safe(self, program, path, **kwargs):
+        try:
+            return FloorCalibrationData(path, **kwargs)
+        except Exception as exc:
+            logger.error("Failed to load floorplan %s: %s", path, exc)
+            self._last_import_error = f"Could not import floorplan:<br>{exc}"
+            self._notice_dialog = NoticeDialog(
+                program.ui_manager,
+                self.screen_size,
+                "Import Error",
+                self._last_import_error,
+            )
+            return None
+
+    def _append_new_floor(self, program, new_fl, ref_target_m, *, has_ref_floors, build_ui=True, show_height=True):
+        if new_fl is None:
+            return
+        if self.lock_grid_size and has_ref_floors:
+            self._sync_floor_to_physical_scale(new_fl, ref_target_m)
+        self._init_floor_fit(new_fl)
+        self.floors.append(new_fl)
+        self.active_floor_index = len(self.floors) - 1
+        if build_ui:
+            self._build_ui(program)
+            self._recompute_detection()
+            if show_height and len(self.floors) > 1:
+                self._show_height_dialog(program)
+
     def enter(self, program):
         if not hasattr(program, 'calibrated_floors') or program.calibrated_floors is None:
             program.calibrated_floors = []
 
         new_path = program.imported_image_path
         program.imported_image_path = None
+        clone_req = getattr(program, "pending_floor_clone", None)
+        program.pending_floor_clone = None
 
-        if not program.calibrated_floors and not new_path:
-            logger.warning("No image path provided for calibration; returning to main menu")
+        if not program.calibrated_floors and not new_path and not clone_req:
+            logger.warning("No floorplan path provided for calibration; returning to main menu")
             cur_size = program.screen.get_size()
             if program.ui_manager is not None:
                 program.ui_manager.set_window_resolution(cur_size)
@@ -565,68 +899,82 @@ class CalibrationState(ProgramState):
 
         self.is_panning = False
         self.pan_start = (0, 0)
-        self.screen_size = (1280, 800)
         self.lock_grid_size = True
         self.is_measuring = False
         self.measure_p1 = None
         self.measure_p2 = None
         self.last_measured_dist_px = 0.0
-
-        self._slider_block_size = None
-        self._slider_sensitivity = None
-        self._btn_coarse = None
-        self._btn_standard = None
-        self._btn_fine = None
-        self._btn_measure_scale = None
-        self._btn_reset_measure = None
-        self._scale_input_window = None
-        self._scale_entry_meters = None
-        self._scale_btn_apply = None
-        self._scale_btn_cancel = None
-        self._btn_lock_grid = None
-        self._btn_toggle_exits = None
-        self._generate_button = None
-        self._btn_back = None
-        self._btn_load_project = None
-        self._btn_add_floor = None
-        self._btn_zoom_in = None
-        self._btn_zoom_out = None
-        self._floor_tab_buttons = []
+        self.is_cropping = False
+        self.crop_p1 = None
+        self.crop_p2 = None
+        self.is_picking_color = False
+        self._add_floor_dialog = None
+        self._delete_floor_dialog = None
+        self._dxf_layers_dialog = None
+        self._notice_dialog = None
 
         self.floors = program.calibrated_floors
+        has_ref_floors = bool(
+            self.floors
+            or (program.simulation and program.simulation.grid_world and program.simulation.grid_world.floors)
+        )
+        ref_target_m, ref_px, ref_has_scale, def_h = self._resolve_reference_scale(program)
 
-        if new_path:
-            cur_bs = self.floors[0].block_size if (self.lock_grid_size and self.floors) else 25
-            cur_sens = self.floors[-1].acceptance_threshold if self.floors else 0.40
-            cur_px = self.floors[0].px_per_m if (self.lock_grid_size and self.floors) else None
-            def_h = 3.0
-            if getattr(program, "same_height_for_all", True):
-                if self.floors:
-                    def_h = getattr(self.floors[0], "floor_height_m", 3.0)
-                elif program.simulation and program.simulation.grid_world and program.simulation.grid_world.floors:
-                    def_h = getattr(program.simulation.grid_world.floors[0], "floor_height_m", 3.0)
-            new_fl = FloorCalibrationData(
-                new_path,
-                block_size=cur_bs,
-                acceptance_threshold=cur_sens,
-                px_per_m=cur_px,
+        if clone_req:
+            src_path = clone_req.get("source_path")
+            rot_deg = int(clone_req.get("rotation_deg", 0) or 0)
+            p_idx = int(clone_req.get("page_index", 0) or 0)
+            cloned_settings = clone_req.get("settings")
+            if cloned_settings is not None:
+                cloned_settings = self._clone_settings(cloned_settings)
+            clone_px = clone_req.get("px_per_m") if clone_req.get("px_per_m") else ref_px
+            clone_has_scale = bool(clone_req.get("has_native_scale")) or (ref_has_scale and bool(clone_px))
+            new_fl = self._create_floor_safe(
+                program,
+                src_path,
+                page_index=p_idx,
+                rotation_deg=rot_deg,
+                crop_rect=None,
+                settings=cloned_settings,
+                px_per_m=clone_px,
+                inherit_scale=clone_has_scale,
                 floor_height_m=def_h,
+                detect_exits=clone_req.get("detect_exits"),
+                target_cell_meters=ref_target_m,
             )
-            self._init_floor_fit(new_fl)
-            self.floors.append(new_fl)
-            self.active_floor_index = len(self.floors) - 1
-        elif not self.floors:
-            first_floor = FloorCalibrationData(
+            self._append_new_floor(program, new_fl, ref_target_m, has_ref_floors=has_ref_floors, build_ui=False, show_height=False)
+        elif new_path:
+            src_fl = None
+            if self.floors:
+                act_idx = 0
+                if program.simulation and program.simulation.grid_world:
+                    act_idx = getattr(program.simulation.grid_world, "active_floor_id", 0)
+                src_fl = self.floors[act_idx] if 0 <= act_idx < len(self.floors) else self.floors[-1]
+            img_kwargs = self._inherited_image_kwargs(src_fl, new_path)
+            new_fl = self._create_floor_safe(
+                program,
                 new_path,
-                block_size=25,
-                acceptance_threshold=0.40,
-                floor_height_m=3.0,
+                px_per_m=ref_px,
+                inherit_scale=ref_has_scale,
+                floor_height_m=def_h,
+                target_cell_meters=ref_target_m,
+                **img_kwargs,
             )
-            self._init_floor_fit(first_floor)
-            self.floors.append(first_floor)
-            self.active_floor_index = 0
+            self._append_new_floor(program, new_fl, ref_target_m, has_ref_floors=has_ref_floors, build_ui=False, show_height=False)
         else:
-            self.active_floor_index = min(getattr(self, 'active_floor_index', 0), len(self.floors) - 1)
+            self.active_floor_index = min(getattr(self, 'active_floor_index', 0), max(0, len(self.floors) - 1))
+
+        if not self.floors:
+            err_dlg = self._notice_dialog
+            self._build_ui(program)
+            if err_dlg is not None:
+                self._notice_dialog = NoticeDialog(
+                    program.ui_manager,
+                    self.screen_size,
+                    "Import Error",
+                    getattr(self, "_last_import_error", "Could not import floorplan."),
+                )
+            return
 
         self._build_ui(program)
         self._recompute_detection()
@@ -634,20 +982,104 @@ class CalibrationState(ProgramState):
         total_floors = len(self.floors)
         if program.simulation and program.simulation.grid_world:
             total_floors = max(total_floors, len(program.simulation.grid_world.floors))
-        if total_floors > 1 and new_path:
+        if total_floors > 1 and (new_path or clone_req):
             self._show_height_dialog(program)
 
     @property
     def active_floor(self):
-        if 0 <= self.active_floor_index < len(self.floors):
+        if 0 <= getattr(self, "active_floor_index", 0) < len(self.floors):
             return self.floors[self.active_floor_index]
         return None
 
+    def _resolve_reference_scale(self, program):
+        ref_target_m = 0.50
+        ref_px = None
+        ref_has_scale = False
+        def_h = 3.0
+        if self.floors:
+            f0 = self.floors[0]
+            if getattr(program, "same_height_for_all", True):
+                def_h = getattr(f0, "floor_height_m", 3.0)
+            if self.lock_grid_size:
+                ref_target_m = getattr(f0, "target_cell_meters", f0.cell_size_m)
+                if getattr(f0, "px_per_m", 0) > 0:
+                    ref_px = float(f0.px_per_m)
+                ref_has_scale = bool(f0.loaded.has_native_scale)
+        elif program.simulation and program.simulation.grid_world and program.simulation.grid_world.floors:
+            f0 = program.simulation.grid_world.floors[0]
+            if getattr(program, "same_height_for_all", True):
+                def_h = getattr(f0, "floor_height_m", 3.0)
+            if self.lock_grid_size:
+                ref_target_m = getattr(f0, "cell_size_m", 0.50)
+                plan_ref = getattr(f0, "plan_reference", None)
+                ref_bs = plan_ref.get("block_size") if isinstance(plan_ref, dict) else None
+                if ref_bs and ref_target_m > 0:
+                    ref_px = float(ref_bs) / float(ref_target_m)
+                    ref_has_scale = True
+        return ref_target_m, ref_px, ref_has_scale, def_h
+
+    def _inherited_image_kwargs(self, src_fl, path: str) -> dict:
+        if src_fl is None:
+            return {"acceptance_threshold": 0.40}
+        ext = Path(path).suffix.lower()
+        if src_fl.loaded.source_type == "image" and ext not in (".dxf", ".pdf"):
+            return {
+                "acceptance_threshold": src_fl.acceptance_threshold,
+                "settings": self._clone_settings(src_fl.settings),
+                "detect_exits": src_fl.detect_exits,
+            }
+        return {"acceptance_threshold": src_fl.acceptance_threshold}
+
+    def _sync_floor_to_physical_scale(self, target_fl, target_cell_m):
+        if target_fl is None or target_cell_m <= 0:
+            return
+        target_fl.target_cell_meters = max(0.05, float(target_cell_m))
+        ref_fl = self.floors[0] if self.floors else self.active_floor
+        if not (target_fl.loaded.has_native_scale and target_fl.px_per_m > 0):
+            if ref_fl and ref_fl.px_per_m > 0:
+                target_fl.px_per_m = ref_fl.px_per_m
+                target_fl.loaded.px_per_m = ref_fl.px_per_m
+                if ref_fl.loaded.has_native_scale and target_fl.loaded.source_type in ("image", "scanned_pdf"):
+                    target_fl.loaded.has_native_scale = True
+        target_fl.apply_target_cell_size()
+
+    def _sync_all_floors_scale(self, source_fl):
+        if source_fl is None or not self.lock_grid_size:
+            return
+        target_cell_m = getattr(source_fl, "target_cell_meters", source_fl.cell_size_m)
+        for fl in self.floors:
+            if fl is source_fl:
+                continue
+            self._sync_floor_to_physical_scale(fl, target_cell_m)
+            self._recompute_floor_detection(fl)
+
+    def _apply_scale_and_refresh(self, cur, program, target_m=None, *, sync_slider=False, rebuild_ui=True):
+        cur.apply_target_cell_size(target_m)
+        self._sync_all_floors_scale(cur)
+        if sync_slider and self._slider_block_size:
+            self._slider_block_size.set_current_value(cur.block_size)
+        self._recompute_detection()
+        if rebuild_ui:
+            self._build_ui(program)
+
+    def _refresh_after_crop_or_page(self, cur, program):
+        cur.sync_from_loaded(recompute_preprocessed=True)
+        if self.lock_grid_size and len(self.floors) > 1 and cur is not self.floors[0]:
+            cur.target_cell_meters = float(getattr(self.floors[0], "target_cell_meters", self.floors[0].cell_size_m))
+        cur.refresh_smart_block_size_after_crop()
+        cur.zoom_level = 1.0
+        cur.pan_offset_x = 0
+        cur.pan_offset_y = 0
+        self._init_floor_fit(cur)
+        self._sync_all_floors_scale(cur)
+        self._recompute_detection()
+        self._build_ui(program)
+
     def _init_floor_fit(self, fl):
         margin = 32
-        avail_w = self.canvas_rect.width - (2 * margin)
-        avail_h = self.canvas_rect.height - (2 * margin)
-        fl.fit_scale = min(avail_w / fl.img_w, avail_h / fl.img_h)
+        avail_w = max(100, self.canvas_rect.width - (2 * margin))
+        avail_h = max(100, self.canvas_rect.height - (2 * margin))
+        fl.fit_scale = min(avail_w / max(1, fl.img_w), avail_h / max(1, fl.img_h))
 
     def handle_resize(self, program, new_size):
         self.screen_size = new_size
@@ -663,6 +1095,8 @@ class CalibrationState(ProgramState):
             self.sidebar_width,
             self.screen_size[1] - self.top_nav_height,
         )
+        for fl in self.floors:
+            self._init_floor_fit(fl)
         self._build_ui(program)
         self._update_overlay_surface()
 
@@ -672,7 +1106,7 @@ class CalibrationState(ProgramState):
 
         program.ui_manager.clear_and_reset()
         mgr = program.ui_manager
-        screen_w = self.screen_size[0]
+        screen_w, screen_h = self.screen_size
         sb_x = self.sidebar_rect.x
 
         container_w = 260
@@ -710,108 +1144,412 @@ class CalibrationState(ProgramState):
             manager=mgr,
             object_id="#btn_add_floor",
         )
-
-        zoom_pill_x = (self.screen_size[0] - self.sidebar_width) - 212 - 20
-        zoom_pill_y = self.screen_size[1] - 52
-        self._btn_zoom_out = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(zoom_pill_x + 4, zoom_pill_y + 4, 68, 30),
-            text="Zoom -",
+        self._btn_delete_floor = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(tab_x + 122, 54, 100, 28),
+            text="Delete Floor",
             manager=mgr,
-            object_id="#menu_button",
+            object_id="#btn_destructive",
         )
-        self._btn_zoom_in = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(zoom_pill_x + 140, zoom_pill_y + 4, 68, 30),
-            text="Zoom +",
-            manager=mgr,
-            object_id="#menu_button",
-        )
+        if len(self.floors) <= 1:
+            self._btn_delete_floor.disable()
 
         cur = self.active_floor
-        bs = cur.block_size if cur else 25
-        sens = int(cur.acceptance_threshold * 100) if cur else 40
-        dex = cur.detect_exits if cur else True
-
-        self._slider_block_size = pygame_gui.elements.UIHorizontalSlider(
-            relative_rect=pygame.Rect(sb_x + 16, 100, 248, 18),
-            start_value=bs,
-            value_range=(10, 50),
-            manager=mgr,
-            click_increment=1,
+        orig_on = bool(cur and cur.show_original_plan)
+        has_ref = bool(cur and cur.ref_raw_image is not None)
+        self._build_bottom_canvas_controls(
+            mgr,
+            self.screen_size[0],
+            self.screen_size[1],
+            orig_on,
+            has_ref,
+            zoom_btn_id="#menu_button",
         )
 
-        self._btn_coarse = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, 148, 66, 28),
-            text="Coarse",
-            manager=mgr,
-            object_id="#btn_preset_active" if bs == 35 else "#btn_preset_inactive",
-        )
-        self._btn_standard = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 86, 148, 116, 28),
-            text="Standard (60cm)",
-            manager=mgr,
-            object_id="#btn_preset_active" if bs == 25 else "#btn_preset_inactive",
-        )
-        self._btn_fine = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 206, 148, 58, 28),
-            text="Fine",
-            manager=mgr,
-            object_id="#btn_preset_active" if bs == 15 else "#btn_preset_inactive",
-        )
+        self._slider_block_size = None
+        self._slider_sensitivity = None
+        self._slider_remove_thin = None
+        self._slider_pdf_thickness = None
+        self._btn_dxf_layers = None
+        self._dxf_unit_buttons = {}
+        self._btn_page_prev = None
+        self._btn_page_next = None
+        self._btn_pdf_fixed = None
+        self._btn_pdf_filled_only = None
+        self._pdf_scale_buttons = {}
+        self._btn_pick_color = None
+        self._btn_pick_auto = None
+        self._btn_img_ignore_colors = None
+        self._btn_img_gray_blocks = None
+        self._btn_rot_left = None
+        self._btn_rot_right = None
+        self._btn_crop = None
+        self._btn_reset_crop = None
+        self._btn_toggle_exits = None
+        self._btn_lock_grid = None
+        self._btn_floor_height = None
+        self._btn_reset_measure = None
 
-        self._btn_measure_scale = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, 184, 168, 28),
-            text="Calibrate Scale (Tape)",
-            manager=mgr,
-            object_id="#tool_btn_selected" if self.is_measuring else "#tool_btn",
-        )
-        self._btn_reset_measure = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 188, 184, 76, 28),
-            text="Reset",
-            manager=mgr,
-            object_id="#menu_button",
-        )
+        layout = {
+            "headers": [],
+            "dividers": [],
+            "sublabels": [],
+            "slider_headers": [],
+            "summary_card": None,
+            "page_label": None,
+        }
 
-        self._slider_sensitivity = pygame_gui.elements.UIHorizontalSlider(
-            relative_rect=pygame.Rect(sb_x + 16, 376, 248, 18),
-            start_value=sens,
-            value_range=(15, 65),
+        x = sb_x + 16
+        w = 248
+        gap = 6
+        half_w = (w - gap) // 2
+        btn_h = 26
+        src_type = cur.loaded.source_type if cur else "image"
+        src_badge = {
+            "dxf": "DXF",
+            "vector_pdf": "VECTOR PDF",
+            "scanned_pdf": "SCANNED PDF",
+            "image": "IMAGE",
+        }.get(src_type, "PLAN")
+
+        cy = 58
+        layout["headers"].append((cy, "PLAN", src_badge))
+        cy += 20
+
+        self._btn_rot_left = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x, cy, half_w, btn_h),
+            text="-90°",
             manager=mgr,
-            click_increment=1,
+            object_id="#btn_secondary",
         )
+        self._btn_rot_right = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x + half_w + gap, cy, w - half_w - gap, btn_h),
+            text="+90°",
+            manager=mgr,
+            object_id="#btn_secondary",
+        )
+        cy += 30
+
+        has_crop = bool(cur and cur.loaded.crop_rect is not None)
+        if has_crop:
+            self._btn_crop = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, half_w, btn_h),
+                text="Crop Area",
+                manager=mgr,
+                object_id="#tool_btn_selected" if self.is_cropping else "#tool_btn",
+            )
+            self._btn_reset_crop = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x + half_w + gap, cy, w - half_w - gap, btn_h),
+                text="Reset Crop",
+                manager=mgr,
+                object_id="#btn_secondary",
+            )
+        else:
+            self._btn_crop = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Crop Area",
+                manager=mgr,
+                object_id="#tool_btn_selected" if self.is_cropping else "#tool_btn",
+            )
+        cy += 34
+
+        layout["dividers"].append(cy)
+        cy += 8
+
+        layout["headers"].append((cy, "WALL DETECTION", None))
+        cy += 20
+
+        dex = cur.detect_exits if cur else False
+
+        if src_type == "dxf":
+            total_layers = len(cur.loaded.dxf_layers)
+            sel_layers = sum(1 for l in cur.loaded.dxf_layers if l.selected)
+            self._btn_dxf_layers = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text=f"Layers ({sel_layers}/{total_layers})...",
+                manager=mgr,
+                object_id="#btn_secondary",
+            )
+            cy += 30
+
+            layout["sublabels"].append((cy, "Units"))
+            cy += 18
+            unit_widths = (47, 46, 47, 46, 46)
+            ux = x
+            cur_u = cur.loaded.dxf_units
+            for u, uw in zip(("mm", "cm", "m", "in", "ft"), unit_widths):
+                btn = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(ux, cy, uw, btn_h),
+                    text=u,
+                    manager=mgr,
+                    object_id="#btn_preset_active" if cur_u == u else "#btn_preset_inactive",
+                )
+                self._dxf_unit_buttons[u] = btn
+                ux += uw + 4
+            cy += 30
+
+        elif src_type == "vector_pdf":
+            if cur.loaded.page_count > 1:
+                cy, page_info = self._build_page_switcher(mgr, cur, x, cy, w)
+                layout["page_label"] = page_info
+
+            layout["sublabels"].append((cy, "Drawing Scale"))
+            cy += 18
+            scale_widths = (58, 57, 58, 57)
+            sx = x
+            active_denom = cur.settings.pdf_scale_denom
+            for denom, sw in zip((50, 100, 200, 500), scale_widths):
+                btn = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(sx, cy, sw, btn_h),
+                    text=f"1:{denom}",
+                    manager=mgr,
+                    object_id="#btn_preset_active" if active_denom == denom else "#btn_preset_inactive",
+                )
+                self._pdf_scale_buttons[denom] = btn
+                sx += sw + 6
+            cy += 30
+
+            thick = cur.settings.pdf_min_thickness_pt
+            layout["slider_headers"].append((cy, "Min Line Width", lambda c: f"{c.settings.pdf_min_thickness_pt:.2f} pt"))
+            cy += 18
+            thick_step = int(round(max(0.0, min(3.0, thick)) / 0.05))
+            self._slider_pdf_thickness = pygame_gui.elements.UIHorizontalSlider(
+                relative_rect=pygame.Rect(x, cy, w, 18),
+                start_value=thick_step,
+                value_range=(0, 60),
+                manager=mgr,
+                click_increment=1,
+            )
+            cy += 22
+
+            fix_on = cur.settings.pdf_include_fixed
+            self._btn_pdf_fixed = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Include Furniture: ON" if fix_on else "Include Furniture: OFF",
+                manager=mgr,
+                object_id="#tool_btn_selected" if fix_on else "#tool_btn",
+            )
+            cy += 30
+
+            filled_only = bool(getattr(cur.settings, "pdf_filled_walls_only", False))
+            self._btn_pdf_filled_only = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Filled Walls Only: ON" if filled_only else "Filled Walls Only: OFF",
+                manager=mgr,
+                object_id="#tool_btn_selected" if filled_only else "#tool_btn",
+            )
+            cy += 30
+
+        else:
+            if cur and cur.loaded.page_count > 1:
+                cy, page_info = self._build_page_switcher(mgr, cur, x, cy, w)
+                layout["page_label"] = page_info
+
+            sens = int(round(cur.acceptance_threshold * 100)) if cur else 40
+            layout["slider_headers"].append((cy, "Wall Sensitivity", lambda c: f"{int(round(c.acceptance_threshold * 100))}%"))
+            cy += 18
+            self._slider_sensitivity = pygame_gui.elements.UIHorizontalSlider(
+                relative_rect=pygame.Rect(x, cy, w, 18),
+                start_value=max(10, min(80, sens)),
+                value_range=(10, 80),
+                manager=mgr,
+                click_increment=1,
+            )
+            cy += 22
+
+            img_f = cur.settings.image_filters if cur else None
+            thin_px = int(img_f.remove_thin_px) if img_f else 0
+            layout["slider_headers"].append((cy, "Remove Thin Lines", lambda c: f"{int(c.settings.image_filters.remove_thin_px)} px"))
+            cy += 18
+            self._slider_remove_thin = pygame_gui.elements.UIHorizontalSlider(
+                relative_rect=pygame.Rect(x, cy, w, 18),
+                start_value=thin_px,
+                value_range=(0, 4),
+                manager=mgr,
+                click_increment=1,
+            )
+            cy += 22
+
+            pick_mode = bool(img_f and img_f.mode == "pick_color" and img_f.picked_rgb)
+            if pick_mode:
+                pick_w = 170
+                reset_w = w - pick_w - gap
+                self._btn_pick_color = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(x, cy, pick_w, btn_h),
+                    text="Pick Wall Color",
+                    manager=mgr,
+                    object_id="#tool_btn_selected" if self.is_picking_color else "#tool_btn",
+                )
+                self._btn_pick_auto = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(x + pick_w + gap, cy, reset_w, btn_h),
+                    text="Reset",
+                    manager=mgr,
+                    object_id="#btn_secondary",
+                )
+            else:
+                self._btn_pick_color = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(x, cy, w, btn_h),
+                    text="Pick Wall Color",
+                    manager=mgr,
+                    object_id="#tool_btn_selected" if self.is_picking_color else "#tool_btn",
+                )
+            cy += 30
+
+            ign_col = bool(img_f.ignore_colors) if img_f else True
+            self._btn_img_ignore_colors = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Ignore Colors: ON" if ign_col else "Ignore Colors: OFF",
+                manager=mgr,
+                object_id="#tool_btn_selected" if ign_col else "#tool_btn",
+            )
+            cy += 30
+
+            gray_blk = bool(img_f.gray_blocks) if img_f else False
+            self._btn_img_gray_blocks = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Include Furniture: ON" if gray_blk else "Include Furniture: OFF",
+                manager=mgr,
+                object_id="#tool_btn_selected" if gray_blk else "#tool_btn",
+            )
+            cy += 30
 
         self._btn_toggle_exits = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, 456, 248, 32),
+            relative_rect=pygame.Rect(x, cy, w, btn_h),
             text="Detect Exits: ON" if dex else "Detect Exits: OFF",
             manager=mgr,
             object_id="#tool_btn_selected" if dex else "#tool_btn",
         )
+        cy += 32
 
-        self._btn_lock_grid = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, 496, 248, 32),
-            text="Same Scale on All Floors: ON" if self.lock_grid_size else "Same Scale on All Floors: OFF",
+        layout["dividers"].append(cy)
+        cy += 8
+
+        layout["headers"].append((cy, "GRID & SCALE", None))
+        cy += 20
+
+        bs = cur.block_size if cur else 25
+        max_bs = cur.slider_max_bs if cur else 50
+        target_m = getattr(cur, "target_cell_meters", 0.50) if cur else 0.50
+
+        layout["slider_headers"].append((cy, "Block Size", lambda c: f"{c.block_size} px"))
+        cy += 18
+        self._slider_block_size = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(x, cy, w, 18),
+            start_value=bs,
+            value_range=(8, max_bs),
             manager=mgr,
-            object_id="#tool_btn_selected" if self.lock_grid_size else "#tool_btn",
+            click_increment=1,
         )
+        cy += 22
 
-        cur_h = getattr(cur, "floor_height_m", 3.0) if cur else 3.0
-        active_idx = self.active_floor_index
-        self._btn_floor_height = None
-        if active_idx > 0:
-            f_num = active_idx + 1
-            f_prev = active_idx
-            self._btn_floor_height = pygame_gui.elements.UIButton(
-                relative_rect=pygame.Rect(sb_x + 16, 536, 248, 32),
-                text=f"Height (Floor {f_prev}–{f_num}): {cur_h:.1f}m",
+        has_phys_scale = bool(cur and cur.loaded.has_native_scale and cur.px_per_m > 0)
+        preset_labels = ("60 cm", "50 cm", "40 cm") if has_phys_scale else ("Coarse", "Medium", "Fine")
+        pw = 80
+        pgap = 4
+        self._btn_coarse = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x, cy, pw, btn_h),
+            text=preset_labels[0],
+            manager=mgr,
+            object_id="#btn_preset_active" if abs(target_m - 0.60) < 0.015 else "#btn_preset_inactive",
+        )
+        self._btn_standard = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x + pw + pgap, cy, pw, btn_h),
+            text=preset_labels[1],
+            manager=mgr,
+            object_id="#btn_preset_active" if abs(target_m - 0.50) < 0.015 else "#btn_preset_inactive",
+        )
+        self._btn_fine = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x + 2 * (pw + pgap), cy, pw, btn_h),
+            text=preset_labels[2],
+            manager=mgr,
+            object_id="#btn_preset_active" if abs(target_m - 0.40) < 0.015 else "#btn_preset_inactive",
+        )
+        cy += 30
+
+        has_manual = bool(cur and getattr(cur, "has_manual_scale", False))
+        if has_manual:
+            meas_w = 176
+            rst_w = w - meas_w - gap
+            self._btn_measure_scale = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, meas_w, btn_h),
+                text="Measure Scale",
+                manager=mgr,
+                object_id="#tool_btn_selected" if self.is_measuring else "#tool_btn",
+            )
+            self._btn_reset_measure = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x + meas_w + gap, cy, rst_w, btn_h),
+                text="Reset",
                 manager=mgr,
                 object_id="#btn_secondary",
             )
+        else:
+            self._btn_measure_scale = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Measure Scale",
+                manager=mgr,
+                object_id="#tool_btn_selected" if self.is_measuring else "#tool_btn",
+            )
+        cy += 30
+
+        layout["summary_card"] = pygame.Rect(x, cy, w, 54)
+        cy += 62
+
+        if len(self.floors) >= 2:
+            layout["dividers"].append(cy)
+            cy += 8
+            layout["headers"].append((cy, "MULTI-FLOOR", None))
+            cy += 20
+
+            self._btn_lock_grid = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text="Sync Floor Scales: ON" if self.lock_grid_size else "Sync Floor Scales: OFF",
+                manager=mgr,
+                object_id="#tool_btn_selected" if self.lock_grid_size else "#tool_btn",
+            )
+            cy += 30
+
+            active_idx = getattr(self, "active_floor_index", 0)
+            if active_idx > 0:
+                f_prev, f_num = active_idx, active_idx + 1
+                cur_h = getattr(cur, "floor_height_m", 3.0) if cur else 3.0
+            else:
+                f_prev, f_num = 1, 2
+                if getattr(program, "same_height_for_all", True):
+                    cur_h = getattr(self.floors[0], "floor_height_m", 3.0)
+                else:
+                    cur_h = getattr(self.floors[1], "floor_height_m", 3.0)
+            self._btn_floor_height = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(x, cy, w, btn_h),
+                text=f"Floor Height ({f_prev}-{f_num}): {cur_h:.1f} m",
+                manager=mgr,
+                object_id="#btn_secondary",
+            )
+            cy += 26
+
+        self._panel_layout = layout
 
         self._generate_button = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(sb_x + 16, self.screen_size[1] - 58, 248, 42),
+            relative_rect=pygame.Rect(x, screen_h - 58, w, 42),
             text="Open in Editor",
             manager=mgr,
             object_id="#btn_start_sim",
         )
+
+    def _build_page_switcher(self, mgr, cur, x, cy, w):
+        nav_w = 40
+        self._btn_page_prev = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x, cy, nav_w, 26),
+            text="<",
+            manager=mgr,
+            object_id="#btn_secondary",
+        )
+        self._btn_page_next = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(x + w - nav_w, cy, nav_w, 26),
+            text=">",
+            manager=mgr,
+            object_id="#btn_secondary",
+        )
+        page_info = (cy, f"Page {cur.loaded.page_index + 1} / {cur.loaded.page_count}")
+        return cy + 30, page_info
 
     def _show_height_dialog(self, program):
         if getattr(self, "_height_window", None) is not None:
@@ -837,6 +1575,8 @@ class CalibrationState(ProgramState):
         same = getattr(program, "same_height_for_all", True)
         if same and self.floors:
             cur_h = getattr(self.floors[0], "floor_height_m", 3.0)
+        elif self.active_floor_index == 0 and len(self.floors) > 1:
+            cur_h = getattr(self.floors[1], "floor_height_m", 3.0)
         else:
             cur_h = getattr(cur, "floor_height_m", 3.0) if cur else 3.0
 
@@ -881,19 +1621,23 @@ class CalibrationState(ProgramState):
             object_id="#menu_button",
         )
 
-    def _recompute_detection(self):
-        cur = self.active_floor
-        if cur is None or cur.preprocessed is None:
+    def _recompute_floor_detection(self, fl):
+        if fl is None or fl.preprocessed is None:
             return
-
-        cur.wall_cells, cur.exit_cells, gw, gh = detect_grid_cells(
-            cur.preprocessed,
-            cur.block_size,
-            cur.acceptance_threshold,
-            detect_exits=cur.detect_exits,
+        mpp = (1.0 / fl.px_per_m) if (fl.px_per_m > 0 and fl.loaded.has_native_scale) else None
+        fl.wall_cells, fl.exit_cells, gw, gh = detect_grid_cells(
+            fl.preprocessed,
+            fl.block_size,
+            fl.acceptance_threshold,
+            detect_exits=fl.detect_exits,
+            meters_per_pixel=mpp,
         )
-        cur.grid_dimensions = (gw, gh)
-        self._update_overlay_surface()
+        fl.grid_dimensions = (gw, gh)
+        if fl is self.active_floor:
+            self._update_overlay_surface()
+
+    def _recompute_detection(self):
+        self._recompute_floor_detection(self.active_floor)
 
     def _update_overlay_surface(self):
         cur = self.active_floor
@@ -910,6 +1654,13 @@ class CalibrationState(ProgramState):
         cur.display_image = pygame.transform.smoothscale(
             cur.raw_image, (cur.disp_w, cur.disp_h)
         )
+        if cur.ref_raw_image is not None:
+            cur.ref_display_image = pygame.transform.smoothscale(
+                cur.ref_raw_image, (cur.disp_w, cur.disp_h)
+            )
+            cur.ref_display_image.set_alpha(120)
+        else:
+            cur.ref_display_image = None
 
         cur.overlay_surface = pygame.Surface((cur.disp_w, cur.disp_h), pygame.SRCALPHA)
 
@@ -917,7 +1668,7 @@ class CalibrationState(ProgramState):
         cell_h = cur.block_size * scale
         gw, gh = cur.grid_dimensions
 
-        wall_color = (59, 130, 246, 185)
+        wall_color = (59, 130, 246, 145)
         for cx, cy in cur.wall_cells:
             rx = int(cx * cell_w)
             ry = int(cy * cell_h)
@@ -925,14 +1676,14 @@ class CalibrationState(ProgramState):
             rh = max(1, int((cy + 1) * cell_h) - ry)
             pygame.draw.rect(cur.overlay_surface, wall_color, (rx, ry, rw, rh))
 
-        exit_color = (16, 185, 129, 220)
+        exit_color = (16, 185, 129, 170)
         for cx, cy in cur.exit_cells:
             rx = int(cx * cell_w)
             ry = int(cy * cell_h)
             rw = max(1, int((cx + 1) * cell_w) - rx)
             rh = max(1, int((cy + 1) * cell_h) - ry)
             pygame.draw.rect(cur.overlay_surface, exit_color, (rx, ry, rw, rh))
-  
+
         grid_line_color = (200, 215, 230, 45)
         for x_idx in range(gw + 1):
             ix = int(x_idx * cell_w)
@@ -943,27 +1694,69 @@ class CalibrationState(ProgramState):
             if iy < cur.disp_h:
                 pygame.draw.line(cur.overlay_surface, grid_line_color, (0, iy), (cur.disp_w, iy))
 
+    def _screen_to_image_coords(self, cur, sx, sy):
+        scale = cur.fit_scale * cur.zoom_level
+        if scale <= 0:
+            return 0.0, 0.0
+        ix = (sx - cur.disp_x) / scale
+        iy = (sy - cur.disp_y) / scale
+        return ix, iy
+
+    def _reprocess_and_refresh(self, cur, program):
+        reprocess_floorplan(cur.loaded, cur.settings)
+        cur.sync_from_loaded(recompute_preprocessed=True)
+        min_safe = max(8, int((max(1, cur.img_w, cur.img_h) + 189) // 190))
+        if cur.block_size < min_safe:
+            cur.block_size = min_safe
+            cur.slider_max_bs = max(50, cur.block_size + 20)
+        cur.update_cell_size()
+        self._init_floor_fit(cur)
+        self._recompute_detection()
+
+    def _apply_slider_value(self, kind, raw_val, cur, program):
+        if kind == "block_size":
+            val = int(round(raw_val))
+            if val != cur.block_size:
+                cur.block_size = val
+                cur.update_cell_size()
+                cur.target_cell_meters = float(cur.cell_size_m)
+                self._sync_all_floors_scale(cur)
+                self._recompute_detection()
+        elif kind == "sensitivity":
+            new_sens = int(round(raw_val)) / 100.0
+            if abs(new_sens - cur.acceptance_threshold) >= 0.01:
+                cur.acceptance_threshold = new_sens
+                cur.settings.sensitivity = new_sens
+                cur.settings.image_filters.sensitivity = new_sens
+                cur.preprocessed = build_preprocessed_for_floorplan(cur.loaded, cur.settings)
+                self._recompute_detection()
+        elif kind == "remove_thin":
+            new_thin = int(round(raw_val))
+            if new_thin != cur.settings.image_filters.remove_thin_px:
+                cur.settings.image_filters.remove_thin_px = new_thin
+                cur.preprocessed = build_preprocessed_for_floorplan(cur.loaded, cur.settings)
+                self._recompute_detection()
+        elif kind == "pdf_thickness":
+            step = int(round(raw_val))
+            new_thick = round(step * 0.05, 2)
+            if abs(new_thick - cur.settings.pdf_min_thickness_pt) >= 0.01:
+                cur.settings.pdf_min_thickness_pt = new_thick
+                self._reprocess_and_refresh(cur, program)
+
     def update(self, program):
         cur = self.active_floor
         if cur is None:
             return
 
-        if self._slider_block_size is not None:
-            new_val = int(self._slider_block_size.get_current_value())
-            if new_val != cur.block_size:
-                cur.block_size = new_val
-                cur.update_cell_size()
-                if self.lock_grid_size:
-                    for fl in self.floors:
-                        fl.block_size = new_val
-                        fl.update_cell_size()
-                self._recompute_detection()
-
-        if self._slider_sensitivity is not None:
-            new_sens = int(self._slider_sensitivity.get_current_value()) / 100.0
-            if abs(new_sens - cur.acceptance_threshold) >= 0.01:
-                cur.acceptance_threshold = new_sens
-                self._recompute_detection()
+        slider_bindings = (
+            ("block_size", self._slider_block_size),
+            ("sensitivity", self._slider_sensitivity),
+            ("remove_thin", self._slider_remove_thin),
+            ("pdf_thickness", self._slider_pdf_thickness),
+        )
+        for kind, slider in slider_bindings:
+            if slider is not None:
+                self._apply_slider_value(kind, slider.get_current_value(), cur, program)
 
         if self.is_panning:
             buttons = pygame.mouse.get_pressed()
@@ -987,12 +1780,33 @@ class CalibrationState(ProgramState):
 
         screen.fill(Color.BACKGROUND.value)
 
+        if cur is not None and cur.preprocessed is not None:
+            expected_dims = (
+                (cur.img_w + cur.block_size - 1) // cur.block_size,
+                (cur.img_h + cur.block_size - 1) // cur.block_size,
+            )
+            if cur.grid_dimensions != expected_dims or cur.overlay_surface is None:
+                self._recompute_floor_detection(cur)
+
         pygame.draw.rect(screen, Color.BACKGROUND.value, self.canvas_rect)
         screen.set_clip(self.canvas_rect)
         if cur and cur.display_image is not None:
             screen.blit(cur.display_image, (cur.disp_x, cur.disp_y))
+        if cur and cur.show_original_plan and cur.ref_display_image is not None:
+            screen.blit(cur.ref_display_image, (cur.disp_x, cur.disp_y))
         if cur and cur.overlay_surface is not None:
             screen.blit(cur.overlay_surface, (cur.disp_x, cur.disp_y))
+
+        if self.is_cropping and self.crop_p1 is not None:
+            p2 = self.crop_p2 if self.crop_p2 is not None else pygame.mouse.get_pos()
+            rx = min(self.crop_p1[0], p2[0])
+            ry = min(self.crop_p1[1], p2[1])
+            rw = abs(p2[0] - self.crop_p1[0])
+            rh = abs(p2[1] - self.crop_p1[1])
+            crop_s = pygame.Surface((max(1, rw), max(1, rh)), pygame.SRCALPHA)
+            crop_s.fill((56, 189, 248, 55))
+            screen.blit(crop_s, (rx, ry))
+            pygame.draw.rect(screen, (56, 189, 248), (rx, ry, rw, rh), 2)
 
         if self.is_measuring and self.measure_p1 is not None:
             p2 = self.measure_p2 if self.measure_p2 is not None else pygame.mouse.get_pos()
@@ -1015,48 +1829,56 @@ class CalibrationState(ProgramState):
 
         screen.set_clip(None)
 
+        banner_txt = None
+        banner_col = (245, 158, 11)
         if self.is_measuring:
-            banner_w = 420
+            if self.measure_p1 is None:
+                banner_txt = "Click two points of known length (Tip: dimension line or standard door = 0.9 m) — Esc to cancel"
+            elif self.measure_p2 is None:
+                banner_txt = "Click 2nd point to finish distance measurement (Esc to cancel)"
+            else:
+                banner_txt = "Enter real-world length in meters"
+        elif self.is_cropping:
+            banner_txt = "Drag a rectangle to crop the floorplan (Esc to cancel)"
+            banner_col = (56, 189, 248)
+        elif self.is_picking_color:
+            banner_txt = "Click on any wall to sample its color (Esc to cancel)"
+            banner_col = (16, 185, 129)
+
+        if banner_txt:
+            t_surf = self.small_font.render(banner_txt, True, (255, 240, 190))
+            banner_w = min(self.canvas_rect.width - 32, max(380, t_surf.get_width() + 28))
             banner_h = 32
             bx = self.canvas_rect.x + (self.canvas_rect.width - banner_w) // 2
             by = 96
             banner_surf = pygame.Surface((banner_w, banner_h), pygame.SRCALPHA)
             banner_surf.fill((20, 20, 20, 230))
-            pygame.draw.rect(banner_surf, (245, 158, 11), banner_surf.get_rect(), 1, border_radius=6)
+            pygame.draw.rect(banner_surf, banner_col, banner_surf.get_rect(), 1, border_radius=6)
             screen.blit(banner_surf, (bx, by))
-            if self.measure_p1 is None:
-                guide_txt = "Click 1st point (e.g. door edge) on map (ESC to cancel)"
-            elif self.measure_p2 is None:
-                guide_txt = "Click 2nd point to finish distance measurement"
-            else:
-                guide_txt = "Enter real-world length in meters"
-            t_surf = self.small_font.render(guide_txt, True, (255, 230, 150))
             screen.blit(t_surf, (bx + (banner_w - t_surf.get_width()) // 2, by + 8))
 
+        leg_x, leg_y = 14, 96
+        leg_w, leg_h = 154, 70
+        leg_bg = pygame.Surface((leg_w, leg_h), pygame.SRCALPHA)
+        leg_bg.fill((20, 20, 20, 225))
+        pygame.draw.rect(leg_bg, (55, 55, 55, 225), leg_bg.get_rect(), 1, border_radius=7)
+        screen.blit(leg_bg, (leg_x, leg_y))
+
         legend_hdr = self.tiny_font.render("DETECTION PREVIEW", True, Color.TEXT_MUTED.value)
-        screen.blit(legend_hdr, (24, 102))
+        screen.blit(legend_hdr, (leg_x + 12, leg_y + 8))
 
-        pygame.draw.rect(screen, (59, 130, 246), (24, 122, 12, 12), border_radius=2)
-        pygame.draw.rect(screen, (147, 197, 253), (24, 122, 12, 12), 1, border_radius=2)
+        pygame.draw.rect(screen, (59, 130, 246), (leg_x + 12, leg_y + 28, 12, 12), border_radius=2)
+        pygame.draw.rect(screen, (147, 197, 253), (leg_x + 12, leg_y + 28, 12, 12), 1, border_radius=2)
         wall_txt = self.small_font.render("Detected walls", True, Color.TEXT_PRIMARY.value)
-        screen.blit(wall_txt, (42, 120))
+        screen.blit(wall_txt, (leg_x + 30, leg_y + 26))
 
-        pygame.draw.rect(screen, Color.EXIT.value, (24, 142, 12, 12), border_radius=2)
-        pygame.draw.rect(screen, (80, 240, 130), (24, 142, 12, 12), 1, border_radius=2)
+        pygame.draw.rect(screen, Color.EXIT.value, (leg_x + 12, leg_y + 47, 12, 12), border_radius=2)
+        pygame.draw.rect(screen, (80, 240, 130), (leg_x + 12, leg_y + 47, 12, 12), 1, border_radius=2)
         exit_txt = self.small_font.render("Detected exits", True, Color.TEXT_PRIMARY.value)
-        screen.blit(exit_txt, (42, 140))
+        screen.blit(exit_txt, (leg_x + 30, leg_y + 45))
 
-        zoom_pill_x = (screen_w - self.sidebar_width) - 212 - 20
-        zoom_pill_y = screen_h - 52
-        zoom_pill_rect = pygame.Rect(zoom_pill_x, zoom_pill_y, 212, 38)
-        pygame.draw.rect(screen, Color.CARD_BG.value, zoom_pill_rect, border_radius=7)
-        pygame.draw.rect(screen, Color.CARD_BORDER.value, zoom_pill_rect, 1, border_radius=7)
-        zoom_val = int(cur.zoom_level * 100) if cur else 100
-        zoom_txt = self.font.render(f"{zoom_val}%", True, (240, 240, 240))
-        screen.blit(
-            zoom_txt,
-            (zoom_pill_rect.centerx - zoom_txt.get_width() // 2, zoom_pill_rect.centery - zoom_txt.get_height() // 2),
-        )
+        zoom_val = int(round(cur.zoom_level * 100)) if cur else 100
+        self._draw_bottom_canvas_pills(screen, zoom_val, has_ref=bool(cur and cur.ref_raw_image is not None))
 
         if len(self.floors) > 1:
             cal_world = type("BuildingProfileData", (), {
@@ -1068,7 +1890,7 @@ class CalibrationState(ProgramState):
                 self.font,
                 self.small_font,
                 cal_world,
-                min_top_y=170,
+                min_top_y=174,
             )
 
         pygame.draw.rect(screen, Color.TOPNAV_BG.value, (0, 0, screen_w, self.top_nav_height))
@@ -1082,9 +1904,7 @@ class CalibrationState(ProgramState):
             screen.blit(self.logo_surf, (lx, ly))
 
         cal_title = "New Project — Floorplan Calibration" if screen_w >= 1050 else "Floorplan Calibration"
-        title_surf = self.title_font.render(
-            cal_title, True, Color.TEXT_PRIMARY.value
-        )
+        title_surf = self.title_font.render(cal_title, True, Color.TEXT_PRIMARY.value)
         title_rect = title_surf.get_rect(left=mark_rect.right + 12, centery=self.top_nav_height // 2)
         screen.blit(title_surf, title_rect)
 
@@ -1107,63 +1927,59 @@ class CalibrationState(ProgramState):
         pygame.draw.rect(screen, Color.SIDEBAR_BG.value, self.sidebar_rect)
         pygame.draw.line(screen, Color.DIVIDER.value, (sb_x, 48), (sb_x, screen_h), 1)
 
-        hdr1 = self.tiny_font.render("GRID RESOLUTION", True, Color.TEXT_MUTED.value)
-        screen.blit(hdr1, (sb_x + 20, 56))
+        x = sb_x + 16
+        right = sb_x + 264
+        layout = self._panel_layout
 
-        cur_bs = cur.block_size if cur else 25
-        lbl_bs = self.font.render("Block Size:", True, (170, 170, 170))
-        val_bs = self.font.render(f"{cur_bs} px", True, (240, 240, 240))
-        screen.blit(lbl_bs, (sb_x + 20, 76))
-        screen.blit(val_bs, (sb_x + 20 + lbl_bs.get_width() + 6, 76))
+        for hy, title, badge in layout["headers"]:
+            hdr_surf = self.tiny_font.render(title, True, Color.TEXT_MUTED.value)
+            screen.blit(hdr_surf, (x, hy))
+            if badge:
+                badge_surf = self.tiny_font.render(badge, True, (56, 189, 248))
+                screen.blit(badge_surf, (right - badge_surf.get_width(), hy))
 
-        sub_l1 = self.small_font.render("10 px", True, (170, 170, 170))
-        sub_r1 = self.small_font.render("50 px", True, (170, 170, 170))
-        screen.blit(sub_l1, (sb_x + 20, 120))
-        screen.blit(sub_r1, (sb_x + 264 - sub_r1.get_width(), 120))
+        for dy in layout["dividers"]:
+            pygame.draw.line(screen, Color.DIVIDER.value, (x, dy), (right, dy), 1)
 
-        card_rect = pygame.Rect(sb_x + 16, 228, 248, 80)
-        pygame.draw.rect(screen, Color.CARD_BG.value, card_rect, border_radius=7)
-        pygame.draw.rect(screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
+        for sy, text in layout["sublabels"]:
+            sub_surf = self.small_font.render(text, True, (170, 170, 170))
+            screen.blit(sub_surf, (x, sy))
 
-        gw, gh = cur.grid_dimensions if cur else (0, 0)
-        lbl_dim = self.font.render("Grid Dimensions:", True, (170, 170, 170))
-        val_dim = self.small_font.render(f"{gw} × {gh}", True, (240, 240, 240))
-        screen.blit(lbl_dim, (card_rect.x + 14, card_rect.y + 11))
-        screen.blit(val_dim, (card_rect.right - val_dim.get_width() - 14, card_rect.y + 12))
+        if layout["page_label"] is not None:
+            py, ptxt = layout["page_label"]
+            p_surf = self.small_font.render(ptxt, True, (235, 235, 235))
+            screen.blit(p_surf, ((x + right - p_surf.get_width()) // 2, py + 5))
 
-        pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 14, card_rect.y + 39), (card_rect.right - 14, card_rect.y + 39), 1)
+        if cur:
+            for sy, name_str, val_fn in layout["slider_headers"]:
+                n_surf = self.small_font.render(name_str, True, (170, 170, 170))
+                v_surf = self.small_font.render(val_fn(cur), True, (240, 240, 240))
+                screen.blit(n_surf, (x, sy))
+                screen.blit(v_surf, (right - v_surf.get_width(), sy))
 
-        cell_m = cur.cell_size_m if cur else 0.6
-        lbl_scale = self.font.render("Real Scale:", True, (170, 170, 170))
-        if cell_m >= 1.0:
-            val_scale = self.small_font.render(f"1 cell = {cell_m:.2f} m", True, (240, 240, 240))
-        else:
-            val_scale = self.small_font.render(f"1 cell = {round(cell_m * 100)} cm", True, (240, 240, 240))
-        screen.blit(lbl_scale, (card_rect.x + 14, card_rect.y + 49))
-        screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 14, card_rect.y + 50))
+        card_rect = layout["summary_card"]
+        if card_rect is not None:
+            pygame.draw.rect(screen, Color.CARD_BG.value, card_rect, border_radius=7)
+            pygame.draw.rect(screen, Color.CARD_BORDER.value, card_rect, 1, border_radius=7)
 
-        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, 322), (sb_x + 264, 322), 1)
+            gw, gh = cur.grid_dimensions if cur else (0, 0)
+            lbl_dim = self.small_font.render("Grid", True, (170, 170, 170))
+            val_dim = self.small_font.render(f"{gw} × {gh}", True, (240, 240, 240))
+            screen.blit(lbl_dim, (card_rect.x + 12, card_rect.y + 6))
+            screen.blit(val_dim, (card_rect.right - val_dim.get_width() - 12, card_rect.y + 6))
 
-        hdr2 = self.tiny_font.render("DETECTION SETTINGS", True, Color.TEXT_MUTED.value)
-        screen.blit(hdr2, (sb_x + 20, 330))
+            pygame.draw.line(screen, (52, 52, 52), (card_rect.x + 12, card_rect.y + 27), (card_rect.right - 12, card_rect.y + 27), 1)
 
-        sens_pct = round((cur.acceptance_threshold if cur else 0.40) * 100)
-        lbl_sens = self.font.render("Wall Sensitivity:", True, (170, 170, 170))
-        val_sens = self.font.render(f"{sens_pct}%", True, (240, 240, 240))
-        screen.blit(lbl_sens, (sb_x + 20, 352))
-        screen.blit(val_sens, (sb_x + 20 + lbl_sens.get_width() + 6, 352))
+            cell_m = cur.cell_size_m if cur else 0.6
+            lbl_scale = self.small_font.render("Scale", True, (170, 170, 170))
+            if cell_m >= 1.0:
+                val_scale = self.small_font.render(f"1 cell = {cell_m:.2f} m", True, (240, 240, 240))
+            else:
+                val_scale = self.small_font.render(f"1 cell = {round(cell_m * 100)} cm", True, (240, 240, 240))
+            screen.blit(lbl_scale, (card_rect.x + 12, card_rect.y + 32))
+            screen.blit(val_scale, (card_rect.right - val_scale.get_width() - 12, card_rect.y + 32))
 
-        sub_l2 = self.small_font.render("Low (15%)", True, (170, 170, 170))
-        sub_r2 = self.small_font.render("High (65%)", True, (170, 170, 170))
-        screen.blit(sub_l2, (sb_x + 20, 396))
-        screen.blit(sub_r2, (sb_x + 264 - sub_r2.get_width(), 396))
-
-        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, 424), (sb_x + 264, 424), 1)
-
-        hdr3 = self.tiny_font.render("CONTROLS", True, Color.TEXT_MUTED.value)
-        screen.blit(hdr3, (sb_x + 20, 434))
-
-        pygame.draw.line(screen, Color.DIVIDER.value, (sb_x + 16, screen_h - 72), (sb_x + 264, screen_h - 72), 1)
+        pygame.draw.line(screen, Color.DIVIDER.value, (x, screen_h - 70), (right, screen_h - 70), 1)
 
     def handle_mouse_wheel(self, program, event):
         mx, my = pygame.mouse.get_pos()
@@ -1209,34 +2025,53 @@ class CalibrationState(ProgramState):
         )
 
     def handle_raw_mouse(self, program, event):
-        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-            if self._slider_block_size is not None and self._slider_block_size.rect.collidepoint(event.pos):
-                r = self._slider_block_size.rect
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        cur = self.active_floor
+        if cur is None:
+            return
+        max_bs = cur.slider_max_bs if cur else 50
+        slider_specs = (
+            ("block_size", self._slider_block_size, 8, max_bs),
+            ("sensitivity", self._slider_sensitivity, 10, 80),
+            ("remove_thin", self._slider_remove_thin, 0, 4),
+            ("pdf_thickness", self._slider_pdf_thickness, 0, 60),
+        )
+        for kind, slider, lo, hi in slider_specs:
+            if slider is not None and slider.rect.collidepoint(event.pos):
+                r = slider.rect
                 ratio = max(0.0, min(1.0, (event.pos[0] - r.x) / max(1, r.width)))
-                val = int(round(10 + ratio * 40))
-                self._slider_block_size.set_current_value(val)
-                cur = self.active_floor
-                if cur is not None and cur.block_size != val:
-                    cur.block_size = val
-                    cur.update_cell_size()
-                    if self.lock_grid_size:
-                        for fl in self.floors:
-                            fl.block_size = val
-                            fl.update_cell_size()
-                    self._recompute_detection()
-            elif self._slider_sensitivity is not None and self._slider_sensitivity.rect.collidepoint(event.pos):
-                r = self._slider_sensitivity.rect
-                ratio = max(0.0, min(1.0, (event.pos[0] - r.x) / max(1, r.width)))
-                val = int(round(15 + ratio * 50))
-                self._slider_sensitivity.set_current_value(val)
-                cur = self.active_floor
-                if cur is not None:
-                    cur.acceptance_threshold = val / 100.0
-                    self._recompute_detection()
+                val = int(round(lo + ratio * (hi - lo)))
+                slider.set_current_value(val)
+                self._apply_slider_value(kind, val, cur, program)
+                break
 
     def handle_mouse(self, program, event):
+        mx, my = event.pos
+        if self.is_picking_color and event.button == 1:
+            if self.canvas_rect.collidepoint(mx, my):
+                cur = self.active_floor
+                if cur:
+                    ix, iy = self._screen_to_image_coords(cur, mx, my)
+                    if 0 <= ix < cur.img_w and 0 <= iy < cur.img_h:
+                        picked_lab, picked_rgb = sample_wall_at_loaded_coords(cur.loaded, int(ix), int(iy))
+                        if picked_lab is not None:
+                            cur.settings.image_filters.mode = "pick_color"
+                            cur.settings.image_filters.picked_lab = picked_lab
+                            cur.settings.image_filters.picked_rgb = picked_rgb
+                            self.is_picking_color = False
+                            cur.preprocessed = build_preprocessed_for_floorplan(cur.loaded, cur.settings)
+                            self._recompute_detection()
+                            self._build_ui(program)
+                return
+
+        if self.is_cropping and event.button == 1:
+            if self.canvas_rect.collidepoint(mx, my):
+                self.crop_p1 = (mx, my)
+                self.crop_p2 = (mx, my)
+                return
+
         if self.is_measuring and event.button == 1:
-            mx, my = event.pos
             if self.canvas_rect.collidepoint(mx, my):
                 cur = self.active_floor
                 if cur and cur.raw_image:
@@ -1256,46 +2091,84 @@ class CalibrationState(ProgramState):
                 return
 
         if event.button in (1, 2, 3):
-            mx, my = event.pos
             if self.canvas_rect.collidepoint(mx, my) and my < self.screen_size[1] - 60:
                 self.is_panning = True
                 self.pan_start = event.pos
+
+    def handle_mouse_motion(self, program, event):
+        if self.is_cropping and self.crop_p1 is not None and event.buttons[0]:
+            self.crop_p2 = event.pos
+
+    def handle_mouse_up(self, program, event):
+        if event.button in (1, 2, 3):
+            self.is_panning = False
+        if self.is_cropping and event.button == 1 and self.crop_p1 is not None:
+            p1 = self.crop_p1
+            p2 = event.pos
+            self.crop_p1 = None
+            self.crop_p2 = None
+            self.is_cropping = False
+            cur = self.active_floor
+            if cur is not None:
+                ix0, iy0 = self._screen_to_image_coords(cur, p1[0], p1[1])
+                ix1, iy1 = self._screen_to_image_coords(cur, p2[0], p2[1])
+                if abs(ix1 - ix0) >= 12 and abs(iy1 - iy0) >= 12:
+                    crop_loaded_floorplan(cur.loaded, (ix0, iy0, ix1, iy1), cur.settings)
+                    self._refresh_after_crop_or_page(cur, program)
+                    return
+            self._build_ui(program)
 
     def _finish_and_generate(self, program):
         if not self.floors:
             return
 
+        def _build_grid_for_floor(fl):
+            gw, gh = fl.grid_dimensions
+            if gw > 0 and gh > 0 and (fl.wall_cells or fl.loaded.source_type != "image"):
+                grid = Map_Grid(gw, gh, CellType.EMPTY)
+                for cx, cy in fl.wall_cells:
+                    grid.add_wall(cx, cy)
+                if fl.detect_exits:
+                    for cx, cy in fl.exit_cells:
+                        grid.add_exit(cx, cy)
+            else:
+                grid = Map_Grid.from_image(
+                    fl.image_path,
+                    fl.block_size,
+                    acceptance_threshold=fl.acceptance_threshold,
+                )
+            fl.update_cell_size()
+            grid.cell_size_m = fl.cell_size_m
+            grid.floor_height_m = getattr(fl, "floor_height_m", 3.0)
+            ref_meta = fl.loaded.to_reference_metadata()
+            ref_meta["block_size"] = int(fl.block_size)
+            grid.plan_reference = ref_meta
+            grid.reference_image = fl.loaded.reference_image
+            return grid
+
+        def _sync_world_floor_meta(floor_obj, grid, block_sz):
+            floor_obj.floor_height_m = grid.floor_height_m
+            floor_obj.plan_reference = grid.plan_reference
+            floor_obj.reference_image = grid.reference_image
+            floor_obj.reference_surface = build_aligned_reference_surface(
+                floor_obj.reference_image, grid.width, grid.height, block_sz
+            )
+
         if program.simulation is None:
             program.simulation = Simulation()
             first = True
             for fl in self.floors:
-                gw, gh = fl.grid_dimensions
-                if gw > 0 and gh > 0 and fl.wall_cells:
-                    grid = Map_Grid(gw, gh, CellType.EMPTY)
-                    for cx, cy in fl.wall_cells:
-                        grid.add_wall(cx, cy)
-                    if fl.detect_exits:
-                        for cx, cy in fl.exit_cells:
-                            grid.add_exit(cx, cy)
-                else:
-                    grid = Map_Grid.from_image(
-                        fl.image_path,
-                        fl.block_size,
-                        acceptance_threshold=fl.acceptance_threshold,
-                    )
-                fl.update_cell_size()
-                grid.cell_size_m = fl.cell_size_m
-                grid.floor_height_m = getattr(fl, "floor_height_m", 3.0)
+                grid = _build_grid_for_floor(fl)
                 if first:
                     program.initialize_world(grid)
                     if program.simulation and program.simulation.grid_world.floors:
-                        program.simulation.grid_world.floors[0].floor_height_m = getattr(fl, "floor_height_m", 3.0)
+                        _sync_world_floor_meta(program.simulation.grid_world.floors[0], grid, fl.block_size)
                     first = False
                 else:
                     new_id = len(program.simulation.grid_world.floors)
-                    program.simulation.grid_world.add_floor_from_map(grid, floor_height_m=getattr(fl, "floor_height_m", 3.0))
+                    program.simulation.grid_world.add_floor_from_map(grid, floor_height_m=grid.floor_height_m)
                     if new_id in program.simulation.grid_world.floors:
-                        program.simulation.grid_world.floors[new_id].floor_height_m = getattr(fl, "floor_height_m", 3.0)
+                        _sync_world_floor_meta(program.simulation.grid_world.floors[new_id], grid, fl.block_size)
                 fl.is_added_to_simulation = True
 
             if getattr(program, "same_height_for_all", True):
@@ -1308,27 +2181,11 @@ class CalibrationState(ProgramState):
         else:
             for fl in self.floors:
                 if not getattr(fl, 'is_added_to_simulation', False):
-                    gw, gh = fl.grid_dimensions
-                    if gw > 0 and gh > 0 and fl.wall_cells:
-                        grid = Map_Grid(gw, gh, CellType.EMPTY)
-                        for cx, cy in fl.wall_cells:
-                            grid.add_wall(cx, cy)
-                        if fl.detect_exits:
-                            for cx, cy in fl.exit_cells:
-                                grid.add_exit(cx, cy)
-                    else:
-                        grid = Map_Grid.from_image(
-                            fl.image_path,
-                            fl.block_size,
-                            acceptance_threshold=fl.acceptance_threshold,
-                        )
-                    fl.update_cell_size()
-                    grid.cell_size_m = fl.cell_size_m
-                    grid.floor_height_m = getattr(fl, "floor_height_m", 3.0)
+                    grid = _build_grid_for_floor(fl)
                     new_id = len(program.simulation.grid_world.floors)
-                    program.simulation.grid_world.add_floor_from_map(grid, floor_height_m=getattr(fl, "floor_height_m", 3.0))
+                    program.simulation.grid_world.add_floor_from_map(grid, floor_height_m=grid.floor_height_m)
                     if new_id in program.simulation.grid_world.floors:
-                        program.simulation.grid_world.floors[new_id].floor_height_m = getattr(fl, "floor_height_m", 3.0)
+                        _sync_world_floor_meta(program.simulation.grid_world.floors[new_id], grid, fl.block_size)
                     fl.is_added_to_simulation = True
 
             if getattr(program, "same_height_for_all", True):
@@ -1336,43 +2193,132 @@ class CalibrationState(ProgramState):
                 for f in program.simulation.grid_world.floors.values():
                     f.floor_height_m = shared_h
             program.simulation.grid_world.same_height_for_all = getattr(program, "same_height_for_all", True)
+            program.save_active_floor_camera()
             new_floor_id = len(program.simulation.grid_world.floors) - 1
             program.simulation.grid_world.set_active_floor(new_floor_id)
             program.update_window_for_active_floor()
 
         program.transition_to(EditorState())
 
+    def _add_floor_from_file(self, program, path):
+        cur = self.active_floor
+        ref_target_m, ref_px, ref_has_scale, def_h = self._resolve_reference_scale(program)
+        img_kwargs = self._inherited_image_kwargs(cur, path)
+        new_floor = self._create_floor_safe(
+            program,
+            path,
+            px_per_m=ref_px,
+            inherit_scale=ref_has_scale,
+            floor_height_m=def_h,
+            target_cell_meters=ref_target_m,
+            **img_kwargs,
+        )
+        self._append_new_floor(program, new_floor, ref_target_m, has_ref_floors=bool(self.floors))
+
+    def _add_floor_from_same_file(self, program):
+        cur = self.active_floor
+        if cur is None or not cur.image_path:
+            return
+        cloned_settings = self._clone_settings(cur.settings)
+        ref_target_m, ref_px, ref_has_scale, def_h = self._resolve_reference_scale(program)
+        clone_px = cur.px_per_m if cur.px_per_m > 0 else ref_px
+        clone_has_scale = bool(cur.loaded.has_native_scale) or ref_has_scale
+        new_floor = self._create_floor_safe(
+            program,
+            cur.image_path,
+            page_index=cur.loaded.page_index,
+            rotation_deg=cur.loaded.rotation_deg,
+            crop_rect=None,
+            settings=cloned_settings,
+            px_per_m=clone_px,
+            inherit_scale=clone_has_scale,
+            floor_height_m=def_h,
+            detect_exits=cur.detect_exits,
+            target_cell_meters=ref_target_m if self.lock_grid_size else getattr(cur, "target_cell_meters", 0.50),
+        )
+        self._append_new_floor(program, new_floor, ref_target_m, has_ref_floors=self.lock_grid_size)
+
     def handle_ui_event(self, program, event):
+        if getattr(self, "_notice_dialog", None) is not None:
+            if self._notice_dialog.handle_event(event) == "close":
+                self._notice_dialog.kill()
+                self._notice_dialog = None
+            return
+
+        if getattr(self, "_add_floor_dialog", None) is not None:
+            res = self._add_floor_dialog.handle_event(event)
+            if res == "cancel":
+                self._add_floor_dialog.kill()
+                self._add_floor_dialog = None
+            elif res == "new_file":
+                self._add_floor_dialog.kill()
+                self._add_floor_dialog = None
+                next_path = _open_file_dialog("Select Floorplan", SUPPORTED_FLOORPLAN_FILETYPES)
+                if next_path:
+                    self._add_floor_from_file(program, next_path)
+            elif res == "same_file":
+                self._add_floor_dialog.kill()
+                self._add_floor_dialog = None
+                self._add_floor_from_same_file(program)
+            return
+
+        if getattr(self, "_delete_floor_dialog", None) is not None:
+            res = self._delete_floor_dialog.handle_event(event)
+            if res == "cancel":
+                self._delete_floor_dialog.kill()
+                self._delete_floor_dialog = None
+            elif res == "delete":
+                self._delete_floor_dialog.kill()
+                self._delete_floor_dialog = None
+                if len(self.floors) > 1:
+                    deleted_idx = self.active_floor_index
+                    deleted_fl = self.floors.pop(deleted_idx)
+                    if (
+                        getattr(deleted_fl, "is_added_to_simulation", False)
+                        and program.simulation
+                        and program.simulation.grid_world
+                        and deleted_idx in program.simulation.grid_world.floors
+                    ):
+                        _delete_floor_from_world(program, deleted_idx)
+                    self.active_floor_index = min(deleted_idx, len(self.floors) - 1)
+                    self.is_measuring = False
+                    self.is_cropping = False
+                    self.is_picking_color = False
+                    self._build_ui(program)
+                    self._recompute_detection()
+            return
+
+        if getattr(self, "_dxf_layers_dialog", None) is not None:
+            res = self._dxf_layers_dialog.handle_event(event)
+            if res == "cancel":
+                self._dxf_layers_dialog.kill()
+                self._dxf_layers_dialog = None
+            elif res == "apply":
+                cur = self.active_floor
+                self._dxf_layers_dialog.kill()
+                self._dxf_layers_dialog = None
+                if cur is not None:
+                    cur.settings.dxf_selected_layers = {l.name for l in cur.loaded.dxf_layers if l.selected}
+                    self._reprocess_and_refresh(cur, program)
+                    self._build_ui(program)
+            return
+
+        cur = self.active_floor
+
         if event.ui_element == self._generate_button:
             self._finish_and_generate(program)
 
         elif event.ui_element == self._btn_add_floor:
-            next_path = _open_file_dialog(
-                "Select Another Floor Image",
-                [("Images", "*.jpg *.png *.jpeg")],
-            )
-            if next_path:
-                cur = self.active_floor
-                cur_bs = cur.block_size if (self.lock_grid_size and cur) else 25
-                cur_sens = cur.acceptance_threshold if cur else 0.40
-                cur_px = cur.px_per_m if (self.lock_grid_size and cur) else None
-                def_h = 3.0
-                if getattr(program, "same_height_for_all", True) and self.floors:
-                    def_h = getattr(self.floors[0], "floor_height_m", 3.0)
-                new_floor = FloorCalibrationData(
-                    next_path,
-                    block_size=cur_bs,
-                    acceptance_threshold=cur_sens,
-                    px_per_m=cur_px,
-                    floor_height_m=def_h,
+            has_src = bool(cur and cur.image_path and Path(cur.image_path).exists())
+            self._add_floor_dialog = AddFloorChoiceDialog(program.ui_manager, self.screen_size, has_source_file=has_src)
+
+        elif event.ui_element == getattr(self, "_btn_delete_floor", None):
+            if len(self.floors) > 1:
+                self._delete_floor_dialog = DeleteFloorConfirmDialog(
+                    program.ui_manager,
+                    self.screen_size,
+                    self.active_floor_index + 1,
                 )
-                self._init_floor_fit(new_floor)
-                self.floors.append(new_floor)
-                self.active_floor_index = len(self.floors) - 1
-                self._build_ui(program)
-                self._recompute_detection()
-                if len(self.floors) > 1:
-                    self._show_height_dialog(program)
 
         elif event.ui_element == self._btn_back:
             cur_size = program.screen.get_size()
@@ -1381,75 +2327,144 @@ class CalibrationState(ProgramState):
             program.transition_to(MainMenuState())
 
         elif event.ui_element == self._btn_load_project:
-            path = _open_file_dialog(
-                "Open project",
-                [("JSON files", "*.json")],
-            )
+            path = _open_file_dialog("Open project", [("JSON files", "*.json")])
             if path:
                 try:
                     with open(path, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    program.initialize_world_from_dict(data)
+                    program.initialize_world_from_dict(data, project_path=path)
                     program.transition_to(EditorState())
                 except Exception as e:
                     logger.error("Failed to load project from %s: %s", path, e)
 
-        elif event.ui_element == self._btn_lock_grid:
-            self.lock_grid_size = not self.lock_grid_size
-            if self.lock_grid_size:
-                cur = self.active_floor
-                if cur:
-                    for fl in self.floors:
-                        fl.block_size = cur.block_size
-                        fl.px_per_m = cur.px_per_m
-                        fl.update_cell_size()
-                    self._recompute_detection()
+        elif event.ui_element == self._btn_rot_left and cur:
+            rotate_loaded_floorplan(cur.loaded, -90)
+            cur.sync_from_loaded(recompute_preprocessed=True)
+            self._init_floor_fit(cur)
+            self._recompute_detection()
+
+        elif event.ui_element == self._btn_rot_right and cur:
+            rotate_loaded_floorplan(cur.loaded, 90)
+            cur.sync_from_loaded(recompute_preprocessed=True)
+            self._init_floor_fit(cur)
+            self._recompute_detection()
+
+        elif event.ui_element == self._btn_crop and cur:
+            self.is_cropping = not self.is_cropping
+            self.is_measuring = False
+            self.is_picking_color = False
+            self.crop_p1 = None
+            self.crop_p2 = None
             self._build_ui(program)
 
-        elif event.ui_element == self._btn_coarse:
-            cur = self.active_floor
-            if cur:
-                cur.block_size = 35
-                cur.update_cell_size()
-                if self.lock_grid_size:
-                    for fl in self.floors:
-                        fl.block_size = 35
-                        fl.update_cell_size()
-                if self._slider_block_size:
-                    self._slider_block_size.set_current_value(35)
-                self._recompute_detection()
+        elif event.ui_element == getattr(self, "_btn_reset_crop", None) and cur:
+            reset_crop_floorplan(cur.loaded, cur.settings)
+            self._refresh_after_crop_or_page(cur, program)
+
+        elif event.ui_element == getattr(self, "_btn_plan_overlay_off", None) and cur:
+            if cur.show_original_plan:
+                cur.show_original_plan = False
                 self._build_ui(program)
 
-        elif event.ui_element == self._btn_standard:
-            cur = self.active_floor
-            if cur:
-                cur.block_size = 25
-                cur.update_cell_size()
-                if self.lock_grid_size:
-                    for fl in self.floors:
-                        fl.block_size = 25
-                        fl.update_cell_size()
-                if self._slider_block_size:
-                    self._slider_block_size.set_current_value(25)
-                self._recompute_detection()
+        elif event.ui_element == getattr(self, "_btn_plan_overlay_on", None) and cur:
+            if not cur.show_original_plan:
+                cur.show_original_plan = True
                 self._build_ui(program)
 
-        elif event.ui_element == self._btn_fine:
-            cur = self.active_floor
-            if cur:
-                cur.block_size = 15
-                cur.update_cell_size()
-                if self.lock_grid_size:
-                    for fl in self.floors:
-                        fl.block_size = 15
-                        fl.update_cell_size()
-                if self._slider_block_size:
-                    self._slider_block_size.set_current_value(15)
+        elif event.ui_element == getattr(self, "_btn_dxf_layers", None) and cur:
+            self._dxf_layers_dialog = DxfLayersDialog(
+                program.ui_manager,
+                self.screen_size,
+                cur.loaded.dxf_layers,
+            )
+
+        elif event.ui_element in self._dxf_unit_buttons.values() and cur:
+            for u, btn in self._dxf_unit_buttons.items():
+                if event.ui_element == btn:
+                    cur.loaded.dxf_units = u
+                    cur.settings.dxf_units = u
+                    cur.loaded.px_per_m = compute_dxf_px_per_m(cur.loaded.pixels_per_source_unit, u)
+                    cur.loaded.has_native_scale = True
+                    cur.px_per_m = cur.loaded.px_per_m
+                    cur.has_manual_scale = False
+                    self._apply_scale_and_refresh(cur, program)
+                    break
+
+        elif event.ui_element == getattr(self, "_btn_page_prev", None) and cur:
+            if cur.loaded.page_index > 0:
+                self._switch_pdf_page(program, cur, cur.loaded.page_index - 1)
+
+        elif event.ui_element == getattr(self, "_btn_page_next", None) and cur:
+            if cur.loaded.page_index + 1 < cur.loaded.page_count:
+                self._switch_pdf_page(program, cur, cur.loaded.page_index + 1)
+
+        elif event.ui_element == getattr(self, "_btn_pdf_fixed", None) and cur:
+            cur.settings.pdf_include_fixed = not cur.settings.pdf_include_fixed
+            self._reprocess_and_refresh(cur, program)
+            self._build_ui(program)
+
+        elif event.ui_element == getattr(self, "_btn_pdf_filled_only", None) and cur:
+            cur.settings.pdf_filled_walls_only = not getattr(cur.settings, "pdf_filled_walls_only", False)
+            self._reprocess_and_refresh(cur, program)
+            self._build_ui(program)
+
+        elif event.ui_element in self._pdf_scale_buttons.values() and cur:
+            for denom, btn in self._pdf_scale_buttons.items():
+                if event.ui_element == btn:
+                    cur.settings.pdf_scale_denom = denom
+                    cur.loaded.pdf_scale_denom = denom
+                    cur.loaded.px_per_m = compute_pdf_px_per_m(cur.loaded.pixels_per_source_unit, denom)
+                    cur.loaded.has_native_scale = True
+                    cur.px_per_m = cur.loaded.px_per_m
+                    cur.has_manual_scale = False
+                    self._apply_scale_and_refresh(cur, program)
+                    break
+
+        elif event.ui_element == getattr(self, "_btn_pick_color", None) and cur:
+            self.is_picking_color = not self.is_picking_color
+            self.is_measuring = False
+            self.is_cropping = False
+            self._build_ui(program)
+
+        elif event.ui_element == getattr(self, "_btn_pick_auto", None) and cur:
+            self.is_picking_color = False
+            cur.settings.image_filters.mode = "auto"
+            cur.preprocessed = build_preprocessed_for_floorplan(cur.loaded, cur.settings)
+            self._recompute_detection()
+            self._build_ui(program)
+
+        elif event.ui_element == getattr(self, "_btn_img_ignore_colors", None) and cur:
+            cur.settings.image_filters.ignore_colors = not cur.settings.image_filters.ignore_colors
+            cur.preprocessed = build_preprocessed_for_floorplan(cur.loaded, cur.settings)
+            self._recompute_detection()
+            self._build_ui(program)
+
+        elif event.ui_element == getattr(self, "_btn_img_gray_blocks", None) and cur:
+            cur.settings.image_filters.gray_blocks = not cur.settings.image_filters.gray_blocks
+            cur.preprocessed = build_preprocessed_for_floorplan(cur.loaded, cur.settings)
+            self._recompute_detection()
+            self._build_ui(program)
+
+        elif event.ui_element == self._btn_lock_grid:
+            self.lock_grid_size = not self.lock_grid_size
+            if self.lock_grid_size and cur:
+                self._sync_all_floors_scale(cur)
                 self._recompute_detection()
-                self._build_ui(program)
+            self._build_ui(program)
+
+        elif event.ui_element == self._btn_coarse and cur:
+            self._apply_scale_and_refresh(cur, program, 0.60, sync_slider=True)
+
+        elif event.ui_element == self._btn_standard and cur:
+            self._apply_scale_and_refresh(cur, program, 0.50, sync_slider=True)
+
+        elif event.ui_element == self._btn_fine and cur:
+            self._apply_scale_and_refresh(cur, program, 0.40, sync_slider=True)
 
         elif event.ui_element == self._btn_measure_scale:
             self.is_measuring = not self.is_measuring
+            self.is_cropping = False
+            self.is_picking_color = False
             self.measure_p1 = None
             self.measure_p2 = None
             if self._scale_input_window:
@@ -1464,29 +2479,24 @@ class CalibrationState(ProgramState):
             if self._scale_input_window:
                 self._scale_input_window.kill()
                 self._scale_input_window = None
+            if event.ui_element == self._btn_reset_measure and cur:
+                cur.reset_manual_scale()
+                self._sync_all_floors_scale(cur)
+                self._recompute_detection()
             self._build_ui(program)
 
         elif event.ui_element == self._scale_btn_apply:
-            cur = self.active_floor
             if cur and hasattr(self, "last_measured_dist_px") and self._scale_entry_meters:
                 try:
                     val_str = self._scale_entry_meters.get_text().strip().replace(",", ".")
                     meters = float(val_str)
                     if meters > 0:
                         px_per_m = self.last_measured_dist_px / meters
-                        new_bs = int(round(0.6 * px_per_m))
-                        new_bs = max(10, min(50, new_bs))
                         cur.px_per_m = px_per_m
-                        cur.block_size = new_bs
-                        cur.update_cell_size()
-                        if self.lock_grid_size:
-                            for fl in self.floors:
-                                fl.px_per_m = px_per_m
-                                fl.block_size = new_bs
-                                fl.update_cell_size()
-                        if self._slider_block_size:
-                            self._slider_block_size.set_current_value(new_bs)
-                        self._recompute_detection()
+                        cur.loaded.px_per_m = px_per_m
+                        cur.loaded.has_native_scale = True
+                        cur.has_manual_scale = True
+                        self._apply_scale_and_refresh(cur, program, rebuild_ui=False)
                 except Exception as e:
                     logger.warning("Invalid scale meters input: %s", e)
             self.is_measuring = False
@@ -1497,12 +2507,10 @@ class CalibrationState(ProgramState):
                 self._scale_input_window = None
             self._build_ui(program)
 
-        elif event.ui_element == self._btn_toggle_exits:
-            cur = self.active_floor
-            if cur:
-                cur.detect_exits = not cur.detect_exits
-                self._recompute_detection()
-                self._build_ui(program)
+        elif event.ui_element == self._btn_toggle_exits and cur:
+            cur.detect_exits = not cur.detect_exits
+            self._recompute_detection()
+            self._build_ui(program)
 
         elif event.ui_element == getattr(self, "_btn_floor_height", None):
             self._show_height_dialog(program)
@@ -1532,12 +2540,12 @@ class CalibrationState(ProgramState):
                         if program.simulation and program.simulation.grid_world:
                             program.simulation.grid_world.set_floor_height(0, val, same_for_all=True)
                     else:
-                        cur = self.active_floor
-                        if cur:
-                            cur.floor_height_m = val
+                        target_idx = 1 if (self.active_floor_index == 0 and len(self.floors) > 1) else self.active_floor_index
+                        if 0 <= target_idx < len(self.floors):
+                            self.floors[target_idx].floor_height_m = val
                         if program.simulation and program.simulation.grid_world:
                             world = program.simulation.grid_world
-                            world.set_floor_height(world.active_floor_id, val, same_for_all=False)
+                            world.set_floor_height(target_idx, val, same_for_all=False)
                 except Exception as e:
                     logger.warning("Invalid floor height input: %s", e)
             if getattr(self, "_height_window", None):
@@ -1550,36 +2558,46 @@ class CalibrationState(ProgramState):
                 self._height_window.kill()
                 self._height_window = None
 
-        elif event.ui_element == self._btn_zoom_in:
-            cur = self.active_floor
-            if cur:
-                cur.zoom_level = min(2.5, round(cur.zoom_level + 0.25, 2))
-                self._update_overlay_surface()
+        elif event.ui_element == self._btn_zoom_in and cur:
+            cur.zoom_level = min(2.5, round(cur.zoom_level + 0.25, 2))
+            self._update_overlay_surface()
 
-        elif event.ui_element == self._btn_zoom_out:
-            cur = self.active_floor
-            if cur:
-                cur.zoom_level = max(0.5, round(cur.zoom_level - 0.25, 2))
-                self._update_overlay_surface()
+        elif event.ui_element == self._btn_zoom_out and cur:
+            cur.zoom_level = max(0.5, round(cur.zoom_level - 0.25, 2))
+            self._update_overlay_surface()
 
         else:
             for idx, tab_btn in enumerate(self._floor_tab_buttons):
                 if event.ui_element == tab_btn:
                     if self.active_floor_index != idx:
                         self.active_floor_index = idx
+                        self.is_measuring = False
+                        self.is_cropping = False
+                        self.is_picking_color = False
                         self._build_ui(program)
-                        if self.active_floor and not self.active_floor.wall_cells:
-                            self._recompute_detection()
-                        else:
-                            self._update_overlay_surface()
+                        self._recompute_detection()
                     break
+
+    def _switch_pdf_page(self, program, cur, new_page_idx):
+        cur.loaded = load_floorplan(
+            cur.image_path,
+            page_index=new_page_idx,
+            crop_rect=None,
+            rotation_deg=cur.loaded.rotation_deg,
+            settings=cur.settings,
+        )
+        self._refresh_after_crop_or_page(cur, program)
 
     def handle_key_event(self, program, key):
         if key == pygame.K_ESCAPE:
-            if self.is_measuring or self._scale_input_window:
+            if self.is_measuring or self._scale_input_window or self.is_cropping or self.is_picking_color:
                 self.is_measuring = False
+                self.is_cropping = False
+                self.is_picking_color = False
                 self.measure_p1 = None
                 self.measure_p2 = None
+                self.crop_p1 = None
+                self.crop_p2 = None
                 if self._scale_input_window:
                     self._scale_input_window.kill()
                     self._scale_input_window = None
@@ -1617,19 +2635,31 @@ class CalibrationState(ProgramState):
             self._finish_and_generate(program)
 
     def exit(self, program):
-        if getattr(self, "_scale_input_window", None) is not None:
-            self._scale_input_window.kill()
-            self._scale_input_window = None
-        if getattr(self, "_height_window", None) is not None:
-            self._height_window.kill()
-            self._height_window = None
+        for attr in (
+            "_scale_input_window",
+            "_height_window",
+            "_add_floor_dialog",
+            "_delete_floor_dialog",
+            "_dxf_layers_dialog",
+            "_notice_dialog",
+        ):
+            dlg = getattr(self, attr, None)
+            if dlg is not None:
+                dlg.kill()
+                setattr(self, attr, None)
         self.is_measuring = False
+        self.is_cropping = False
+        self.is_picking_color = False
         self.measure_p1 = None
         self.measure_p2 = None
+        self.crop_p1 = None
+        self.crop_p2 = None
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
         self._slider_block_size = None
         self._slider_sensitivity = None
+        self._slider_remove_thin = None
+        self._slider_pdf_thickness = None
         self._btn_coarse = None
         self._btn_standard = None
         self._btn_fine = None
@@ -1644,6 +2674,8 @@ class CalibrationState(ProgramState):
         self._btn_back = None
         self._btn_load_project = None
         self._btn_add_floor = None
+        self._btn_delete_floor = None
+        self._btn_plan_overlay = None
         self._btn_zoom_in = None
         self._btn_zoom_out = None
         self._floor_tab_buttons = []
@@ -1668,6 +2700,28 @@ class CalibrationState(ProgramState):
         ]
 
 
+def _bresenham_cells(x0, y0, x1, y1):
+    cells = []
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    x, y = x0, y0
+    while True:
+        cells.append((x, y))
+        if x == x1 and y == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+    return cells
+
+
 class EditorState(ProgramState):
     name = "editor"
     can_pan = True
@@ -1682,6 +2736,8 @@ class EditorState(ProgramState):
         self._nav_edit = None
         self._nav_sim = None
         self._btn_add_floor = None
+        self._btn_delete_floor = None
+        self._delete_floor_dialog = None
         self._btn_wall = None
         self._btn_eraser = None
         self._btn_evacuee = None
@@ -1691,6 +2747,8 @@ class EditorState(ProgramState):
         self._btn_random_crowd = None
         self._btn_clear_entities = None
         self._btn_toggle_grid = None
+        self._btn_plan_overlay_off = None
+        self._btn_plan_overlay_on = None
         self._btn_floor_height = None
         self._stair_link_buttons = {}
         self._stair_unlink_buttons = {}
@@ -1698,6 +2756,9 @@ class EditorState(ProgramState):
         self._btn_zoom_out = None
         self._is_panning = False
         self._pan_start = (0, 0)
+        self._line_start = None
+        self._line_end = None
+        self._add_floor_dialog = None
         self.title_font = get_font(22, bold=True)
         self.font = get_font(15)
         self.small_font = get_font(13)
@@ -1712,15 +2773,56 @@ class EditorState(ProgramState):
         self._crowd_btn_apply = None
         self._crowd_btn_cancel = None
 
+    def _ensure_active_floor_overlay(self, program):
+        if not program.simulation or not program.simulation.grid_world:
+            return
+        floor = program.simulation.grid_world.active_floor
+        if getattr(floor, "reference_surface", None) is not None:
+            return
+        ref_img = getattr(floor, "reference_image", None)
+        plan_ref = getattr(floor, "plan_reference", None)
+        if ref_img is None and plan_ref:
+            ref_img = restore_reference_image(
+                plan_ref,
+                project_json_dir=getattr(program, "loaded_project_dir", None),
+            )
+            floor.reference_image = ref_img
+        if ref_img is not None:
+            bs = plan_ref.get("block_size") if isinstance(plan_ref, dict) else None
+            floor.reference_surface = build_aligned_reference_surface(
+                ref_img,
+                floor.map_grid.width,
+                floor.map_grid.height,
+                bs,
+            )
+
+    def _has_floor_plan_reference(self, floor, program=None):
+        if floor is None:
+            return False
+        if getattr(floor, "reference_image", None) is not None or getattr(floor, "reference_surface", None) is not None:
+            return True
+        plan_ref = getattr(floor, "plan_reference", None)
+        if isinstance(plan_ref, dict) and plan_ref.get("source_path"):
+            return resolve_plan_source_path(
+                plan_ref["source_path"],
+                project_json_dir=getattr(program, "loaded_project_dir", None) if program else None,
+            ) is not None
+        return False
+
     def enter(self, program):
         program.view_options.show_heatmap = False
         program.view_options.show_clusters = False
         program.view_options.show_cluster_connections = False
         program.view_options.show_drone_routes = False
+        program.update_window_for_active_floor()
+        if getattr(program.view_options, "show_plan_overlay", False):
+            self._ensure_active_floor_overlay(program)
         self._rebuild_ui(program)
 
     def on_floor_changed(self, program):
         program.simulation.grid_world.rebuild_changed_map_data()
+        if getattr(program.view_options, "show_plan_overlay", False):
+            self._ensure_active_floor_overlay(program)
         self._rebuild_ui(program)
 
     def handle_resize(self, program, *args):
@@ -1794,6 +2896,14 @@ class EditorState(ProgramState):
             manager=program.ui_manager,
             object_id="#btn_add_floor",
         )
+        self._btn_delete_floor = pygame_gui.elements.UIButton(
+            pygame.Rect(tab_x + 117, 54, 100, 28),
+            "Delete Floor",
+            manager=program.ui_manager,
+            object_id="#btn_destructive",
+        )
+        if world is None or len(world.floors) <= 1:
+            self._btn_delete_floor.disable()
 
         tool_x = sidebar_x + 16
         col_w = 120
@@ -1807,6 +2917,7 @@ class EditorState(ProgramState):
             "Wall",
             manager=program.ui_manager,
             object_id="#tool_btn_selected" if self.selected_tool == Tool.WALL else "#tool_btn",
+            tool_tip_text="Draw walls (Hold Shift + Drag for straight line)",
         )
         self._btn_eraser = pygame_gui.elements.UIButton(
             pygame.Rect(col2_x, 152, col_w, tool_h),
@@ -1916,20 +3027,15 @@ class EditorState(ProgramState):
                     self._stair_link_buttons[cid] = btn_l
                 stair_y += 32
 
-        canvas_w = max(100, screen_w - SIDEBAR_WIDTH)
-        zoom_pill_x = canvas_w - 212 - 20
-        zoom_pill_y = screen_h - 52
-        self._btn_zoom_out = pygame_gui.elements.UIButton(
-            pygame.Rect(zoom_pill_x + 4, zoom_pill_y + 4, 68, 30),
-            "Zoom -",
-            manager=program.ui_manager,
-            object_id="#btn_secondary",
-        )
-        self._btn_zoom_in = pygame_gui.elements.UIButton(
-            pygame.Rect(zoom_pill_x + 140, zoom_pill_y + 4, 68, 30),
-            "Zoom +",
-            manager=program.ui_manager,
-            object_id="#btn_secondary",
+        overlay_on = getattr(program.view_options, "show_plan_overlay", False)
+        has_ref = self._has_floor_plan_reference(active_floor, program)
+        self._build_bottom_canvas_controls(
+            program.ui_manager,
+            screen_w,
+            screen_h,
+            overlay_on and has_ref,
+            has_ref,
+            zoom_btn_id="#btn_secondary",
         )
 
     def _zoom(self, program, factor, mouse_pos):
@@ -1943,6 +3049,7 @@ class EditorState(ProgramState):
             config.drawing_size = new_size
             config.camera_offset_x = int(mx - gx * new_size)
             config.camera_offset_y = int(my - gy * new_size)
+            program.save_active_floor_camera()
             self._rebuild_ui(program)
 
     def _handle_stair_click(self, program, endpoint):
@@ -2179,18 +3286,104 @@ class EditorState(ProgramState):
         self._rebuild_ui(program)
 
     def exit(self, program):
+        if getattr(self, "_add_floor_dialog", None) is not None:
+            self._add_floor_dialog.kill()
+            self._add_floor_dialog = None
+        if getattr(self, "_delete_floor_dialog", None) is not None:
+            self._delete_floor_dialog.kill()
+            self._delete_floor_dialog = None
         if getattr(self, "_crowd_window", None) is not None:
             self._crowd_window.kill()
             self._crowd_window = None
         if getattr(self, "_height_window", None) is not None:
             self._height_window.kill()
             self._height_window = None
+        self._line_start = None
+        self._line_end = None
         program.simulation.grid_world.rebuild_changed_map_data()
         if program.ui_manager is not None:
             program.ui_manager.clear_and_reset()
 
+    def _find_active_source_for_clone(self, program):
+        world = program.simulation.grid_world if program.simulation else None
+        active_floor = world.active_floor if world else None
+        cal_floors = getattr(program, "calibrated_floors", None) or []
+        if world and 0 <= world.active_floor_id < len(cal_floors):
+            cf = cal_floors[world.active_floor_id]
+            if cf.image_path and Path(cf.image_path).exists():
+                return {
+                    "source_path": cf.image_path,
+                    "rotation_deg": cf.loaded.rotation_deg,
+                    "page_index": cf.loaded.page_index,
+                    "settings": cf.settings,
+                    "px_per_m": cf.px_per_m,
+                    "has_native_scale": cf.loaded.has_native_scale,
+                    "detect_exits": cf.detect_exits,
+                }
+        plan_ref = getattr(active_floor, "plan_reference", None) if active_floor else None
+        if isinstance(plan_ref, dict) and plan_ref.get("source_path"):
+            resolved = resolve_plan_source_path(
+                plan_ref["source_path"],
+                project_json_dir=getattr(program, "loaded_project_dir", None),
+            )
+            if resolved is not None:
+                return {
+                    "source_path": str(resolved),
+                    "rotation_deg": int(plan_ref.get("rotation_deg", 0) or 0),
+                    "page_index": int(plan_ref.get("page_index", 0) or 0),
+                    "settings": None,
+                    "px_per_m": None,
+                }
+        return None
+
     def handle_ui_event(self, program, event):
         import time
+        if getattr(self, "_add_floor_dialog", None) is not None:
+            res = self._add_floor_dialog.handle_event(event)
+            if res == "cancel":
+                self._add_floor_dialog.kill()
+                self._add_floor_dialog = None
+            elif res == "new_file":
+                self._add_floor_dialog.kill()
+                self._add_floor_dialog = None
+                path = _open_file_dialog("Select Floorplan", SUPPORTED_FLOORPLAN_FILETYPES)
+                if path:
+                    program.imported_image_path = path
+                    program.pending_floor_clone = None
+                    program.transition_to(CalibrationState())
+            elif res == "same_file":
+                self._add_floor_dialog.kill()
+                self._add_floor_dialog = None
+                clone_req = self._find_active_source_for_clone(program)
+                if clone_req:
+                    program.imported_image_path = None
+                    program.pending_floor_clone = clone_req
+                    program.transition_to(CalibrationState())
+            return
+
+        if getattr(self, "_delete_floor_dialog", None) is not None:
+            res = self._delete_floor_dialog.handle_event(event)
+            if res == "cancel":
+                self._delete_floor_dialog.kill()
+                self._delete_floor_dialog = None
+            elif res == "delete":
+                self._delete_floor_dialog.kill()
+                self._delete_floor_dialog = None
+                world = program.simulation.grid_world if program.simulation else None
+                if world is not None and len(world.floors) > 1:
+                    deleted_idx = world.active_floor_id
+                    if _delete_floor_from_world(program, deleted_idx):
+                        cal_floors = getattr(program, "calibrated_floors", None)
+                        if cal_floors is not None and 0 <= deleted_idx < len(cal_floors):
+                            cal_floors.pop(deleted_idx)
+                        program.update_window_for_active_floor()
+                        if getattr(program.view_options, "show_plan_overlay", False):
+                            self._ensure_active_floor_overlay(program)
+                        program.simulation.prepare()
+                        program.plan_drone_routes()
+                        self._rebuild_ui(program)
+            return
+
         world = program.simulation.grid_world if program.simulation else None
         if event.ui_element == self._save_btn:
             _save_project(program)
@@ -2271,6 +3464,16 @@ class EditorState(ProgramState):
         elif event.ui_element == self._btn_toggle_grid:
             program.view_options.show_grid = not program.view_options.show_grid
             self._rebuild_ui(program)
+        elif event.ui_element == getattr(self, "_btn_plan_overlay_off", None):
+            if getattr(program.view_options, "show_plan_overlay", False):
+                program.view_options.show_plan_overlay = False
+                self._rebuild_ui(program)
+        elif event.ui_element == getattr(self, "_btn_plan_overlay_on", None):
+            if world and self._has_floor_plan_reference(world.active_floor, program):
+                if not getattr(program.view_options, "show_plan_overlay", False):
+                    program.view_options.show_plan_overlay = True
+                    self._ensure_active_floor_overlay(program)
+                    self._rebuild_ui(program)
         elif event.ui_element == getattr(self, "_btn_zoom_in", None):
             screen_w, screen_h = program.screen.get_size()
             center = ((screen_w - SIDEBAR_WIDTH) // 2, (screen_h - 48) // 2 + 48)
@@ -2280,10 +3483,19 @@ class EditorState(ProgramState):
             center = ((screen_w - SIDEBAR_WIDTH) // 2, (screen_h - 48) // 2 + 48)
             self._zoom(program, 0.8, center)
         elif event.ui_element == self._btn_add_floor:
-            path = _open_file_dialog("Select Floorplan Image", [("Images", "*.jpg *.png *.jpeg")])
-            if path:
-                program.imported_image_path = path
-                program.transition_to(CalibrationState())
+            clone_req = self._find_active_source_for_clone(program)
+            self._add_floor_dialog = AddFloorChoiceDialog(
+                program.ui_manager,
+                program.screen.get_size(),
+                has_source_file=bool(clone_req),
+            )
+        elif event.ui_element == getattr(self, "_btn_delete_floor", None):
+            if world is not None and len(world.floors) > 1:
+                self._delete_floor_dialog = DeleteFloorConfirmDialog(
+                    program.ui_manager,
+                    program.screen.get_size(),
+                    world.active_floor_id + 1,
+                )
         else:
             handled = False
             for cid, btn in self._stair_link_buttons.items():
@@ -2317,6 +3529,7 @@ class EditorState(ProgramState):
                 for f_id, tab_btn in self._floor_tabs.items():
                     if event.ui_element == tab_btn:
                         if f_id != world.active_floor_id:
+                            program.save_active_floor_camera()
                             world.set_active_floor(f_id)
                             program.update_window_for_active_floor()
                             self.on_floor_changed(program)
@@ -2328,12 +3541,16 @@ class EditorState(ProgramState):
         import utils.config as config
         if key == pygame.K_LEFT:
             config.camera_offset_x += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_RIGHT:
             config.camera_offset_x -= 24
+            program.save_active_floor_camera()
         elif key == pygame.K_UP:
             config.camera_offset_y += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_DOWN:
             config.camera_offset_y -= 24
+            program.save_active_floor_camera()
 
     def handle_mouse_wheel(self, program, event):
         if event.y > 0:
@@ -2344,6 +3561,13 @@ class EditorState(ProgramState):
     def handle_mouse_up(self, program, event):
         if event.button == 2:
             self._is_panning = False
+            program.save_active_floor_camera()
+        elif event.button == 1 and self._line_start is not None:
+            end_pt = self._line_end or self._line_start
+            for cx, cy in _bresenham_cells(self._line_start[0], self._line_start[1], end_pt[0], end_pt[1]):
+                place(program.simulation, cx, cy, Tool.WALL)
+            self._line_start = None
+            self._line_end = None
 
     def handle_mouse(self, program, event):
         screen_w, screen_h = program.screen.get_size()
@@ -2375,6 +3599,15 @@ class EditorState(ProgramState):
 
         if event.button == 1:
             grid_x, grid_y = pixel_to_grid(*event.pos)
+            if (
+                self.selected_tool == Tool.WALL
+                and (pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                and world.map_grid.in_bounds(grid_x, grid_y)
+            ):
+                self._line_start = (grid_x, grid_y)
+                self._line_end = (grid_x, grid_y)
+                return
+
             if world.map_grid.in_bounds(grid_x, grid_y):
                 endpoint = world.stair_cluster_at(world.active_floor_id, grid_x, grid_y)
                 if endpoint is not None:
@@ -2396,6 +3629,14 @@ class EditorState(ProgramState):
             config.camera_offset_x += dx
             config.camera_offset_y += dy
             self._pan_start = event.pos
+            return
+
+        if self._line_start is not None and event.buttons[0]:
+            world = program.simulation.grid_world
+            gx, gy = pixel_to_grid(*event.pos)
+            gx = max(0, min(world.map_grid.width - 1, gx))
+            gy = max(0, min(world.map_grid.height - 1, gy))
+            self._line_end = (gx, gy)
             return
 
         buttons = event.buttons
@@ -2422,20 +3663,38 @@ class EditorState(ProgramState):
         screen_w, screen_h = screen.get_size()
         import utils.config as config
 
+        world = program.simulation.grid_world if program.simulation else None
+        active_floor = world.active_floor if world else None
         canvas_w = max(100, screen_w - SIDEBAR_WIDTH)
-        zoom_pill_x = canvas_w - 212 - 20
-        zoom_pill_y = screen_h - 52
-        zoom_pill_rect = pygame.Rect(zoom_pill_x, zoom_pill_y, 212, 38)
-        pygame.draw.rect(screen, Color.CARD_BG.value, zoom_pill_rect, border_radius=7)
-        pygame.draw.rect(screen, Color.CARD_BORDER.value, zoom_pill_rect, 1, border_radius=7)
         zoom_pct = int(round((getattr(config, 'drawing_size', 8) / 8.0) * 100))
-        zoom_txt = self.font.render(f"{zoom_pct}%", True, (240, 240, 240))
-        screen.blit(
-            zoom_txt,
-            (zoom_pill_rect.centerx - zoom_txt.get_width() // 2, zoom_pill_rect.centery - zoom_txt.get_height() // 2),
+        self._draw_bottom_canvas_pills(
+            screen,
+            zoom_pct,
+            has_ref=self._has_floor_plan_reference(active_floor, program),
         )
 
-        hint_surf = self.tiny_font.render("Left click: draw • Right click: erase • Scroll: zoom • Arrows: pan", True, (150, 155, 165))
+        if self._line_start is not None and self._line_end is not None:
+            canvas_rect = pygame.Rect(0, TOP_BAR_HEIGHT, canvas_w, max(100, screen_h - TOP_BAR_HEIGHT))
+            screen.set_clip(canvas_rect)
+            d_size = getattr(config, 'drawing_size', 8)
+            line_cells = _bresenham_cells(self._line_start[0], self._line_start[1], self._line_end[0], self._line_end[1])
+            preview_surf = pygame.Surface((d_size, d_size), pygame.SRCALPHA)
+            preview_surf.fill((59, 130, 246, 140))
+            for lx, ly in line_cells:
+                px, py = grid_to_pixel(lx, ly)
+                screen.blit(preview_surf, (px, py))
+                pygame.draw.rect(screen, (147, 197, 253), (px, py, d_size, d_size), 1)
+            p1 = grid_to_pixel_center(*self._line_start)
+            p2 = grid_to_pixel_center(*self._line_end)
+            pygame.draw.line(screen, (245, 158, 11), p1, p2, 2)
+            screen.set_clip(None)
+
+        hint_text = (
+            "Left click: draw • Shift+Drag: straight wall • Right click: erase • Scroll: zoom • Arrows: pan"
+            if self.selected_tool == Tool.WALL
+            else "Left click: draw • Right click: erase • Scroll: zoom • Arrows: pan"
+        )
+        hint_surf = self.tiny_font.render(hint_text, True, (150, 155, 165))
         hint_rect = pygame.Rect(canvas_w // 2 - hint_surf.get_width() // 2 - 10, 92, hint_surf.get_width() + 20, 28)
         pygame.draw.rect(screen, (24, 25, 28), hint_rect, border_radius=5)
         pygame.draw.rect(screen, (48, 52, 60), hint_rect, 1, border_radius=5)
@@ -2798,12 +4057,16 @@ class SimulationRunningState(ProgramState):
         import utils.config as config
         if key == pygame.K_LEFT:
             config.camera_offset_x += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_RIGHT:
             config.camera_offset_x -= 24
+            program.save_active_floor_camera()
         elif key == pygame.K_UP:
             config.camera_offset_y += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_DOWN:
             config.camera_offset_y -= 24
+            program.save_active_floor_camera()
 
     def _zoom(self, program, factor, mouse_pos):
         import utils.config as config
@@ -2827,6 +4090,7 @@ class SimulationRunningState(ProgramState):
     def handle_mouse_up(self, program, event):
         if event.button == 2:
             self._is_panning = False
+            program.save_active_floor_camera()
 
     def handle_mouse(self, program, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
@@ -3228,12 +4492,16 @@ class SimulationPausedState(ProgramState):
         import utils.config as config
         if key == pygame.K_LEFT:
             config.camera_offset_x += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_RIGHT:
             config.camera_offset_x -= 24
+            program.save_active_floor_camera()
         elif key == pygame.K_UP:
             config.camera_offset_y += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_DOWN:
             config.camera_offset_y -= 24
+            program.save_active_floor_camera()
 
     def _zoom(self, program, factor, mouse_pos):
         import utils.config as config
@@ -3257,6 +4525,7 @@ class SimulationPausedState(ProgramState):
     def handle_mouse_up(self, program, event):
         if event.button == 2:
             self._is_panning = False
+            program.save_active_floor_camera()
 
     def handle_mouse(self, program, event):
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
@@ -3407,20 +4676,15 @@ class SimulationEditorState(ProgramState):
             object_id="#btn_secondary",
         )
 
-        canvas_w = max(100, screen_w - SIDEBAR_WIDTH)
-        zoom_pill_x = canvas_w - 212 - 20
-        zoom_pill_y = screen_h - 52
-        self._btn_zoom_out = pygame_gui.elements.UIButton(
-            pygame.Rect(zoom_pill_x + 4, zoom_pill_y + 4, 68, 30),
-            "Zoom -",
-            manager=program.ui_manager,
-            object_id="#btn_secondary",
-        )
-        self._btn_zoom_in = pygame_gui.elements.UIButton(
-            pygame.Rect(zoom_pill_x + 140, zoom_pill_y + 4, 68, 30),
-            "Zoom +",
-            manager=program.ui_manager,
-            object_id="#btn_secondary",
+        overlay_on = getattr(program.view_options, "show_plan_overlay", False)
+        has_ref = self._has_floor_plan_reference(active_floor, program)
+        self._build_bottom_canvas_controls(
+            program.ui_manager,
+            screen_w,
+            screen_h,
+            overlay_on and has_ref,
+            has_ref,
+            zoom_btn_id="#btn_secondary",
         )
 
     def _zoom(self, program, factor, mouse_pos):
@@ -3434,6 +4698,7 @@ class SimulationEditorState(ProgramState):
             config.drawing_size = new_size
             config.camera_offset_x = int(mx - gx * new_size)
             config.camera_offset_y = int(my - gy * new_size)
+            program.save_active_floor_camera()
             self._rebuild_ui(program)
 
     def handle_mouse_wheel(self, program, event):
@@ -3482,12 +4747,16 @@ class SimulationEditorState(ProgramState):
         import utils.config as config
         if key == pygame.K_LEFT:
             config.camera_offset_x += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_RIGHT:
             config.camera_offset_x -= 24
+            program.save_active_floor_camera()
         elif key == pygame.K_UP:
             config.camera_offset_y += 24
+            program.save_active_floor_camera()
         elif key == pygame.K_DOWN:
             config.camera_offset_y -= 24
+            program.save_active_floor_camera()
 
     def handle_mouse(self, program, event):
         if event.button == 2:
@@ -3514,6 +4783,7 @@ class SimulationEditorState(ProgramState):
     def handle_mouse_up(self, program, event):
         if event.button == 2:
             self._is_panning = False
+            program.save_active_floor_camera()
 
     def handle_mouse_motion(self, program, event):
         if getattr(self, "_is_panning", False) and getattr(self, "_pan_start", None) is not None:

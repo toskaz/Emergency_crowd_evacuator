@@ -273,11 +273,14 @@ class SimulationMetrics:
         palette = ["#10b981", "#3b82f6", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#6366f1"]
         colors = [palette[i % len(palette)] for i in range(len(labels))]
 
-        bars = ax2.bar(labels, pcts, color=colors, width=0.45, edgecolor="#333333", linewidth=1)
-        ax2.set_title("Exit Load Distribution (%)", color="#f0f0f0", fontsize=11, fontweight="bold", pad=8)
+        bars = ax2.bar(labels, pcts, color=colors, width=0.42, edgecolor="#333333", linewidth=1)
+        ax2.set_title("Exit Load Distribution (%)", color="#f0f0f0", fontsize=11, fontweight="bold", pad=14)
         ax2.set_xlabel("Logical Exits", color="#c0c0c0", fontsize=9)
         ax2.set_ylabel("Evacuee Share (%)", color="#c0c0c0", fontsize=9)
-        ax2.set_ylim(0, 100)
+        ax2.set_ylim(0, 120)
+        ax2.set_yticks([0, 20, 40, 60, 80, 100])
+        if len(labels) == 1:
+            ax2.set_xlim(-0.85, 0.85)
         ax2.grid(True, axis="y", color="#2c2c2c", linestyle="--", linewidth=0.7)
         ax2.tick_params(colors="#b0b0b0", labelsize=9)
         ax2.spines["top"].set_visible(False)
@@ -288,7 +291,7 @@ class SimulationMetrics:
         for bar, p_val, cnt in zip(bars, pcts, counts):
             ax2.text(
                 bar.get_x() + bar.get_width() / 2,
-                p_val + 1.2,
+                p_val + 1.5,
                 f"{p_val:.1f}%\n({cnt})",
                 ha="center",
                 va="bottom",

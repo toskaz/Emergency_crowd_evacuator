@@ -11,6 +11,7 @@ from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from graphics.fonts import init_ui_manager_fonts
+from map.floorplan_loader import build_aligned_reference_surface, restore_reference_image
 from simulation import Simulation
 from utils.config import drawing_size, q_table_path
 from utils.program_state import MainMenuState
@@ -31,6 +32,7 @@ TOP_BAR_HEIGHT = 88
 @dataclass
 class ViewOptions:
     show_grid: bool = False
+    show_plan_overlay: bool = False
     show_clusters: bool = True
     show_cluster_connections: bool = True
     show_drone_routes: bool = True
@@ -67,6 +69,8 @@ class ProgramContext:
         self.rl_evacuee_controller = None
         self.coordinator = None
         self.imported_image_path = None
+        self.pending_floor_clone = None
+        self.loaded_project_dir = None
         self.calibrated_floors = []
         self.running = True
 
@@ -112,12 +116,22 @@ class ProgramContext:
         self.rl_evacuee_controller.load(q_table_path)
         self.coordinator = GlobalCoordinator(self.simulation.grid_world, routing_algorithm=self.routing_algorithm)
 
+    def save_active_floor_camera(self):
+        if self.simulation is None or self.simulation.grid_world is None:
+            return
+        active_floor = self.simulation.grid_world.active_floor
+        if active_floor is not None:
+            active_floor.view_drawing_size = int(getattr(config, "drawing_size", 8))
+            active_floor.view_camera_offset_x = int(getattr(config, "camera_offset_x", 0))
+            active_floor.view_camera_offset_y = int(getattr(config, "camera_offset_y", 0))
+
     def initialize_world(self, map_grid):
         if self.simulation is None:
             self.simulation = Simulation()
         h = getattr(map_grid, "floor_height_m", 3.0)
         self.simulation.grid_world.add_floor_from_map(map_grid, floor_height_m=h)
         self.simulation.grid_world.same_height_for_all = self.same_height_for_all
+        self.loaded_project_dir = None
 
         screen_width, screen_height = self.screen.get_size()
 
@@ -129,16 +143,36 @@ class ProgramContext:
             self.ui_manager.set_window_resolution((screen_width, screen_height))
 
         self.window = Window(map_grid)
+        config.drawing_size = 8
         self._center_camera(map_grid, screen_width, screen_height)
+        self.save_active_floor_camera()
         if self.drone_controller is None:
             self._load_controllers()
         else:
             self.coordinator = GlobalCoordinator(self.simulation.grid_world, routing_algorithm=self.routing_algorithm)
 
-    def initialize_world_from_dict(self, data):
+    def initialize_world_from_dict(self, data, project_path=None):
         self.simulation = Simulation()
         self.simulation.grid_world.from_dict(data)
         self.same_height_for_all = getattr(self.simulation.grid_world, "same_height_for_all", True)
+        self.loaded_project_dir = str(Path(project_path).resolve().parent) if project_path else None
+
+        any_ref_restored = False
+        for floor in self.simulation.grid_world.floors.values():
+            plan_ref = getattr(floor, "plan_reference", None)
+            if plan_ref:
+                ref_img = restore_reference_image(plan_ref, project_json_dir=self.loaded_project_dir)
+                if ref_img is not None:
+                    floor.reference_image = ref_img
+                    bs = plan_ref.get("block_size") if isinstance(plan_ref, dict) else None
+                    floor.reference_surface = build_aligned_reference_surface(
+                        ref_img,
+                        floor.map_grid.width,
+                        floor.map_grid.height,
+                        bs,
+                    )
+                    any_ref_restored = True
+        self.view_options.show_plan_overlay = any_ref_restored
 
         map_grid = self.simulation.grid_world.map_grid
         screen_width, screen_height = self.screen.get_size()
@@ -150,7 +184,9 @@ class ProgramContext:
             self.ui_manager.set_window_resolution((screen_width, screen_height))
 
         self.window = Window(map_grid)
+        config.drawing_size = 8
         self._center_camera(map_grid, screen_width, screen_height)
+        self.save_active_floor_camera()
         if self.drone_controller is None:
             self._load_controllers()
         else:
@@ -168,9 +204,18 @@ class ProgramContext:
     def update_window_for_active_floor(self):
         if self.simulation is None:
             return
-        map_grid = self.simulation.grid_world.map_grid
+        world = self.simulation.grid_world
+        map_grid = world.map_grid
         current_w, current_h = self.screen.get_size()
-        self._center_camera(map_grid, current_w, current_h)
+        active_floor = world.active_floor
+        if active_floor is not None and getattr(active_floor, "view_drawing_size", None) is not None:
+            config.drawing_size = active_floor.view_drawing_size
+            config.camera_offset_x = active_floor.view_camera_offset_x
+            config.camera_offset_y = active_floor.view_camera_offset_y
+        else:
+            config.drawing_size = 8
+            self._center_camera(map_grid, current_w, current_h)
+            self.save_active_floor_camera()
         if self.window is not None:
             self.window.screen = self.screen
 
