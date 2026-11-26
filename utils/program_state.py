@@ -1905,7 +1905,7 @@ class CalibrationState(ProgramState):
             ly = mark_rect.centery - self.logo_surf.get_height() // 2
             screen.blit(self.logo_surf, (lx, ly))
 
-        cal_title = "New Project — Floorplan Calibration" if screen_w >= 1050 else "Floorplan Calibration"
+        cal_title = "New Project - Floorplan Calibration" if screen_w >= 1050 else "Floorplan Calibration"
         title_surf = self.title_font.render(cal_title, True, Color.TEXT_PRIMARY.value)
         title_rect = title_surf.get_rect(left=mark_rect.right + 12, centery=self.top_nav_height // 2)
         screen.blit(title_surf, title_rect)
