@@ -42,6 +42,7 @@ class TrainingProgress:
             self.viewer.draw(env, episode, total_episodes, reward=0.0)
 
     def on_step(self, env, reward, total_steps, info):
+        self.steps.total = env.max_episode_steps
         outcome = "exit reached" if env.path_only else "evacuated"
         self.steps.set_postfix({"reward": f"{reward:.1f}", outcome: f"{info['evacuation_rate']:.0%}"}, refresh=False)
         self.steps.update(1)
@@ -57,7 +58,7 @@ class TrainingProgress:
             count = len(self.recent)
             postfix = dict(
                 stage=getattr(env, "training_stage", env.curriculum_stage) or "manual",
-                phase=getattr(env, "navigation_phase", None) or "escort",
+                phase=getattr(env, "navigation_phase", None) or "navigation",
                 epsilon=f"{env.controller.epsilon:.3f}")
             if count:
                 postfix.update(reward=f"{sum(item[0] for item in self.recent) / count:.1f}",
@@ -71,6 +72,7 @@ class TrainingProgress:
             tqdm.write(line)
 
     def on_evaluation_step(self, env, trial, trials, reward, info):
+        self.steps.total = env.max_episode_steps
         if env.step_count == 1:
             self.steps.reset(total=env.max_episode_steps)
             self.steps.set_description(f"Eval {getattr(env, 'evaluation_suite', '')} {env.curriculum_stage} {trial}/{trials}")

@@ -158,7 +158,8 @@ def reset_simulation(simulation):
 
 
 def place_curriculum_scenario(simulation, rng, evacuee_count, floor_id,
-                              min_distance, max_distance, require_detour=False):
+                              min_distance, max_distance, require_detour=False,
+                              vision_radius=drone_vision_radius):
     world = simulation.grid_world
     reset_simulation(simulation)
     floor = world.floors[floor_id]
@@ -181,7 +182,7 @@ def place_curriculum_scenario(simulation, rng, evacuee_count, floor_id,
             if (px, py) != (x, y)
             and floor.map_grid.get(px, py) == CellType.EMPTY
             and floor.distance_map[py][px] > EXIT_REACH
-            and can_see(world, floor_id, x, y, px, py, radius=drone_vision_radius)
+            and can_see(world, floor_id, x, y, px, py, radius=vision_radius)
         ]
         if len(nearby) >= evacuee_count:
             break

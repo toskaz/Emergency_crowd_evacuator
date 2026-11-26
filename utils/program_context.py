@@ -1,6 +1,7 @@
 from pathlib import Path
 from dataclasses import dataclass
 import logging
+import pickle
 
 import pygame
 import pygame_gui
@@ -11,7 +12,7 @@ from controls.evacuee_rl import QLearningFollowController
 from controls.global_coordinator import GlobalCoordinator
 from graphics.window import Window
 from simulation import Simulation
-from utils.config import drawing_size, escort_drone_model_path, q_table_path
+from utils.config import drawing_size, drone_model_path, q_table_path
 from utils.program_state import MainMenuState
 import utils.config as config
 
@@ -110,14 +111,18 @@ class ProgramContext:
             self.drone_controller.reset()
             return
         if self.rl_drone_controller is None:
-            if not Path(escort_drone_model_path).is_file():
-                self.drone_mode_notice = "Notice: Train an A* + RL drone model before selecting RL."
+            if not Path(drone_model_path).is_file():
+                self.drone_mode_notice = "Notice: Train and save models/bestModelDNQNEW.pt before selecting DQN drones."
                 return
-            from controls.drone_escort_rl import EscortDroneController
+            from controls.drone_dqn import DQNDroneController
 
-            controller = EscortDroneController(training=False)
-            if not controller.load(escort_drone_model_path):
-                self.drone_mode_notice = "Notice: The A* + RL drone model is incompatible."
+            controller = DQNDroneController(training=False)
+            try:
+                if not controller.load(drone_model_path):
+                    raise ValueError("Incompatible drone observations")
+            except (ValueError, RuntimeError, KeyError, OSError, EOFError, pickle.UnpicklingError):
+                logger.exception("Could not load DQN drone checkpoint")
+                self.drone_mode_notice = "Notice: The DQN drone model is incompatible or unreadable."
                 return
             self.rl_drone_controller = controller
         self.rl_drone_controller.reset()

@@ -4,37 +4,33 @@ from map.cell import CellType
 
 
 LAYOUT_KINDS = ("rooms", "switchbacks", "mixed_building")
-CURRICULUM_STAGES = ("basic", "turns", "mixed")
+NAVIGATION_STAGES = ("basic", "obstacles", "big")
 BUILDING_SIZES = ((49, 35), (63, 49), (77, 56))
 CARDINAL_STEPS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
 
-def generate_curriculum_building(simulation, rng, stage):
-    if stage not in CURRICULUM_STAGES[:-1]:
-        raise ValueError(f"Unknown introductory stage: {stage}")
-    grids = []
-    for _ in range(2 if stage == "turns" else 1):
-        width, height = rng.choice(((35, 25), (39, 29), (43, 31)))
-        grid = Map_Grid(width, height, CellType.EMPTY)
-        for x in range(width):
-            grid.set(x, 0, CellType.WALL)
-            grid.set(x, height - 1, CellType.WALL)
-        for y in range(height):
-            grid.set(0, y, CellType.WALL)
-            grid.set(width - 1, y, CellType.WALL)
-        if stage == "turns":
-            _add_switchbacks(grid, rng, barriers=rng.randint(1, 2))
-        _add_exits(grid, rng, count=1)
-        grids.append(grid)
-    endpoints = [_add_stair_patch(grid, rng) for grid in grids] if stage == "turns" else []
-    for grid in grids:
-        simulation.grid_world.add_floor_from_map(grid)
-    if endpoints:
-        world = simulation.grid_world
-        world.connect_stair_clusters(
-            world.stair_cluster_at(0, *endpoints[0]),
-            world.stair_cluster_at(1, *endpoints[1]),
-        )
+def generate_navigation_building(simulation, rng, stage):
+    """Single-floor navigation lessons; no stair cells or floor links."""
+    if stage not in NAVIGATION_STAGES:
+        raise ValueError(f"Unknown navigation stage: {stage}")
+    sizes = BUILDING_SIZES if stage == "big" else ((35, 25), (39, 29), (43, 31))
+    width, height = rng.choice(sizes)
+    grid = Map_Grid(width, height, CellType.EMPTY)
+    for x in range(width):
+        grid.set(x, 0, CellType.WALL)
+        grid.set(x, height - 1, CellType.WALL)
+    for y in range(height):
+        grid.set(0, y, CellType.WALL)
+        grid.set(width - 1, y, CellType.WALL)
+    if stage == "obstacles":
+        _add_switchbacks(grid, rng, barriers=rng.randint(1, 2))
+    elif stage == "big":
+        if rng.random() < .5:
+            _add_rooms(grid, rng)
+        else:
+            _add_switchbacks(grid, rng)
+    _add_exits(grid, rng, count=1, width=1)
+    simulation.grid_world.add_floor_from_map(grid)
 
 
 def generate_training_building(simulation, rng, kind="mixed_building", floor_count=None):
@@ -146,19 +142,25 @@ def _add_switchbacks(grid, rng, barriers=None):
             grid.set(x, y, CellType.WALL)
 
 
-def _add_exits(grid, rng, count=None):
+def _add_exits(grid, rng, count=None, width=1):
     count = rng.randint(1, 2) if count is None else count
     for side in rng.sample(("left", "right", "top", "bottom"), count):
         if side in ("left", "right"):
             x = 0 if side == "left" else grid.width - 1
             inner_x = 1 if side == "left" else grid.width - 2
-            candidates = [y for y in range(2, grid.height - 2) if grid.get(inner_x, y) == CellType.EMPTY]
-            grid.set(x, rng.choice(candidates), CellType.EXIT)
+            candidates = [y for y in range(2, grid.height - 1 - width)
+                          if all(grid.get(inner_x, y + offset) == CellType.EMPTY for offset in range(width))]
+            start = rng.choice(candidates)
+            for offset in range(width):
+                grid.set(x, start + offset, CellType.EXIT)
         else:
             y = 0 if side == "top" else grid.height - 1
             inner_y = 1 if side == "top" else grid.height - 2
-            candidates = [x for x in range(2, grid.width - 2) if grid.get(x, inner_y) == CellType.EMPTY]
-            grid.set(rng.choice(candidates), y, CellType.EXIT)
+            candidates = [x for x in range(2, grid.width - 1 - width)
+                          if all(grid.get(x + offset, inner_y) == CellType.EMPTY for offset in range(width))]
+            start = rng.choice(candidates)
+            for offset in range(width):
+                grid.set(start + offset, y, CellType.EXIT)
 
 
 def _add_stair_patch(grid, rng):
