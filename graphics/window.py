@@ -123,7 +123,16 @@ class Window:
         self._draw_figma_chrome(context, selected_tool)
 
     def _draw_grid(self, context, grid):
-        draw_map(self.screen, grid, context.view_options.show_grid)
+        overlay_surf = None
+        if (
+            getattr(context.state, "name", "") == "editor"
+            and getattr(context.view_options, "show_plan_overlay", False)
+            and context.simulation
+            and context.simulation.grid_world
+        ):
+            active_floor = context.simulation.grid_world.active_floor
+            overlay_surf = getattr(active_floor, "reference_surface", None)
+        draw_map(self.screen, grid, context.view_options.show_grid, plan_overlay_surface=overlay_surf)
 
     def _draw_overlays(self, context):
         world = context.simulation.grid_world

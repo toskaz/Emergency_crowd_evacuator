@@ -46,6 +46,57 @@ class Grid_World:
         self.active_floor_id = floor_id if floor_id == 0 else self.active_floor_id
         self.rebuild_map_data()
 
+    def delete_floor(self, deleted_floor_id):
+        if len(self.floors) <= 1 or deleted_floor_id not in self.floors:
+            return False
+
+        old_links = self._snapshot_stair_links()
+        ordered_ids = sorted(self.floors.keys())
+        idx_map = {}
+        new_floors = {}
+        new_idx = 0
+        for old_id in ordered_ids:
+            if old_id == deleted_floor_id:
+                continue
+            fl = self.floors[old_id]
+            fl.id = new_idx
+            new_floors[new_idx] = fl
+            idx_map[old_id] = new_idx
+            new_idx += 1
+
+        for fl in new_floors.values():
+            for cluster in fl.cluster_grid.clusters:
+                if isinstance(cluster, StairCluster):
+                    cluster.linked_to = None
+
+        for (fa, ca), (fb, cb) in old_links:
+            if fa == deleted_floor_id or fb == deleted_floor_id:
+                continue
+            if fa not in idx_map or fb not in idx_map:
+                continue
+            nfa = idx_map[fa]
+            nfb = idx_map[fb]
+            c_a = new_floors[nfa].cluster_grid.clusters[ca] if 0 <= ca < len(new_floors[nfa].cluster_grid.clusters) else None
+            c_b = new_floors[nfb].cluster_grid.clusters[cb] if 0 <= cb < len(new_floors[nfb].cluster_grid.clusters) else None
+            if isinstance(c_a, StairCluster) and isinstance(c_b, StairCluster):
+                c_a.linked_to = (nfb, cb)
+                c_b.linked_to = (nfa, ca)
+
+        if self.pending_stair_endpoint is not None:
+            pf, pc = self.pending_stair_endpoint
+            if pf == deleted_floor_id or pf not in idx_map:
+                self.pending_stair_endpoint = None
+            else:
+                self.pending_stair_endpoint = (idx_map[pf], pc)
+
+        self.floors = new_floors
+        self.changed_floor_ids.clear()
+        self.active_floor_id = min(deleted_floor_id, len(self.floors) - 1)
+        self.stair_link_notice = None
+        self.stair_link_error = None
+        self.rebuild_navigation()
+        return True
+
     def to_dict(self):
         floors = []
         for floor_id, floor in self.floors.items():
@@ -53,14 +104,18 @@ class Grid_World:
                 [int(floor.map_grid.get(x, y)) for x in range(floor.map_grid.width)]
                 for y in range(floor.map_grid.height)
             ]
-            floors.append({
+            floor_entry = {
                 "floor_id": floor_id,
                 "width": floor.map_grid.width,
                 "height": floor.map_grid.height,
                 "cell_size_m": getattr(floor, "cell_size_m", 0.6),
                 "floor_height_m": getattr(floor, "floor_height_m", 3.0),
                 "cells": cells,
-            })
+            }
+            plan_ref = getattr(floor, "plan_reference", None)
+            if plan_ref:
+                floor_entry["plan_reference"] = plan_ref
+            floors.append(floor_entry)
 
         stair_links = []
         seen_links = set()
@@ -107,6 +162,7 @@ class Grid_World:
                     map_grid.set(x, y, CellType(cell_value))
             floor = Floor(floor_id, map_grid, floor_height_m=floor_height_m)
             floor.cell_size_m = cell_size_m
+            floor.plan_reference = floor_data.get("plan_reference")
             self.floors[floor_id] = floor
 
         if self.floors:

@@ -34,35 +34,55 @@ TOOL_COLORS = {
 }
 
 
-def draw_map(screen, grid, show_grid):
+def draw_map(screen, grid, show_grid, plan_overlay_surface=None):
     screen.fill(Color.BACKGROUND.value)
+
+    d_size = config.drawing_size
+    px0, py0 = grid_to_pixel(0, 0)
+    map_rect = pygame.Rect(px0, py0, grid.width * d_size, grid.height * d_size)
+    pygame.draw.rect(screen, Color.EMPTY.value, map_rect)
+
+    if plan_overlay_surface is not None:
+        target_w = max(1, grid.width * d_size)
+        target_h = max(1, grid.height * d_size)
+        if plan_overlay_surface.get_size() != (target_w, target_h):
+            scaled = pygame.transform.smoothscale(plan_overlay_surface, (target_w, target_h))
+        else:
+            scaled = plan_overlay_surface
+        scaled.set_alpha(72)
+        screen.blit(scaled, (px0, py0))
 
     for y in range(grid.height):
         for x in range(grid.width):
             value = grid.get(x, y)
+            if value == CellType.EMPTY:
+                continue
 
             pos_x, pos_y = grid_to_pixel(x, y)
             color = CELL_COLORS.get(value, Color.EMPTY.value)
 
-            pygame.draw.rect(
-                screen,
-                color,
-                (pos_x, pos_y, config.drawing_size, config.drawing_size)
-            )
+            if value not in (CellType.EVACUEE, CellType.DRONE):
+                pygame.draw.rect(
+                    screen,
+                    color,
+                    (pos_x, pos_y, d_size, d_size)
+                )
 
             marker_color = ENTITY_COLORS.get(value)
             if marker_color is not None:
                 cx, cy = grid_to_pixel_center(x, y)
-                radius = max(2, config.drawing_size // 2)
+                radius = max(2, d_size // 2)
                 pygame.draw.circle(screen, marker_color, (cx, cy), radius)
 
-            if show_grid:
-                pygame.draw.rect(
-                    screen,
-                    Color.GRID.value,
-                    (pos_x, pos_y, config.drawing_size, config.drawing_size),
-                    1
-                )
+    if show_grid:
+        end_x = px0 + grid.width * d_size
+        end_y = py0 + grid.height * d_size
+        for x in range(grid.width + 1):
+            lx = px0 + x * d_size
+            pygame.draw.line(screen, Color.GRID.value, (lx, py0), (lx, end_y), 1)
+        for y in range(grid.height + 1):
+            ly = py0 + y * d_size
+            pygame.draw.line(screen, Color.GRID.value, (px0, ly), (end_x, ly), 1)
 
 
 def draw_assignment_groups(screen, simulation, floor_id):

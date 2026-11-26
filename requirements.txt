@@ -7,3 +7,5 @@ gymnasium
 pygame_gui
 tqdm
 matplotlib
+ezdxf
+pymupdf
