@@ -2,153 +2,118 @@ from collections import deque
 from dataclasses import dataclass
 import logging
 import random
-
 import numpy as np
 import torch
 from torch import nn
-
 from controls.action import Action
-from controls.line_of_sight import can_see
+from controls.drone_cnn import ENCODED_SIZE, HISTORY_FRAMES, VIEW_RADIUS, VIEW_SIZE, map_encoder
 from map.cell import CellType
-from utils.config import drone_visible_evacuee_target, drone_vision_radius
-
-
 logger = logging.getLogger(__name__)
-
-
-ACTION_DIRECTIONS = {
-    Action.STAY: (0, 0),
-    Action.UP: (0, -1),
-    Action.DOWN: (0, 1),
-    Action.LEFT: (-1, 0),
-    Action.RIGHT: (1, 0),
-}
-
-PATCH_RADIUS = drone_vision_radius
-PATCH_SIZE = 2 * PATCH_RADIUS + 1
-CHANNELS = 12
-ASSIGNED_EVACUEES_CHANNEL = 10
-VISIBLE_GROUP_COUNT_CHANNEL = 11
-OBSERVATION_VERSION = 3
-WALL_CLEARANCE_RADIUS = 3
-WALL_PROXIMITY_PENALTY = 0.005
-DRONE_PROGRESS_REWARD = 0.05
-DRONE_EXIT_REWARD = 10.0
-MISSION_FAILURE_PENALTY = 20.0
-REWARD_VERSION = 3
-PATH_FOLLOWING_REWARD_VERSION = 4
-PATH_FOLLOWING_PROGRESS_REWARD = 1.0
-PATH_FOLLOWING_CLUSTER_REWARD = 10.0
-TARGET_SYNC_STEPS = 2000
+ACTION_DIRECTIONS = {Action.STAY: (0, 0), Action.UP: (0, -1), Action.DOWN: (0, 1), Action.LEFT: (-1, 0), Action.RIGHT: (1, 0)}
+PATCH_RADIUS = VIEW_RADIUS
+PATCH_SIZE = VIEW_SIZE
+CHANNELS = 2
+STACKED_CHANNELS = CHANNELS * HISTORY_FRAMES
+OBSERVATION_VERSION = 8
+NAVIGATION_REWARD_VERSION = 18
+TARGET_SYNC_STEPS = 50
+SOFT_UPDATE_TAU = 0.005
+BATCH_SIZE = 32
 MAX_TRAINING_Q = 100.0
-STEP_COST = 0.06
-VISIBILITY_REWARD = 0.002
-FOLLOWER_PROGRESS_REWARD = 0.025
-FOLLOWER_EXIT_REWARD = 10.0
-GROUP_COMPLETION_REWARD = 10.0
-FAILED_MOVE_GRACE = 2
-FAILED_MOVE_PENALTY = 0.1
-DISCOUNT = 0.995
-N_STEP = 5
-
+DISCOUNT = 0.99
+N_STEP = 1
 
 @dataclass
 class DroneTransition:
-    state: np.ndarray
+    state: dict
     action: int
     position: tuple
     target_node: tuple | None
     route: tuple
-    route_cursor: int
-    visible_followers: dict
-    initial_group: tuple
-    evacuated_before: frozenset
     active: bool
-    previous_failure: tuple | None
-    distance_fields: dict | None = None
-    drone_distance: float = float("inf")
-
 
 class DroneQNetwork(nn.Module):
+
     def __init__(self):
         super().__init__()
-        self.features = nn.Sequential(
-            nn.Conv2d(CHANNELS, 16, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(16, 32, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(32 * PATCH_SIZE * PATCH_SIZE, 64),
-            nn.ReLU(),
-            nn.Linear(64, len(Action)),
-        )
+        self.map_encoder = map_encoder(STACKED_CHANNELS)
+        self.features = nn.Sequential(nn.Linear(ENCODED_SIZE + 2, 128), nn.ReLU(), nn.Linear(128, len(Action)))
 
     def forward(self, state):
-        return self.features(state)
-
+        patch, offsets = state
+        return self.features(torch.cat((self.map_encoder(patch), offsets), dim=1))
 
 class DQNDroneController:
-    def __init__(self, training=True, n_step=N_STEP, path_following=False):
+    network_type = DroneQNetwork
+    observation_version = OBSERVATION_VERSION
+    observation_shape = (STACKED_CHANNELS, PATCH_SIZE, PATCH_SIZE)
+    feature_count = 2
+
+    def __init__(self, training=True, n_step=N_STEP):
         if not isinstance(n_step, int) or n_step < 1:
-            raise ValueError("n_step must be a positive integer")
-        self.device = torch.device("cpu")
+            raise ValueError('n_step must be a positive integer')
+        self.device = torch.device('cpu')
         self.training = training
-        self.epsilon = 0.15
-        self.policy_network = DroneQNetwork().to(self.device)
+        self.epsilon = 1.0
+        self.policy_network = self.network_type().to(self.device)
         self.target_network = None
         self.optimizer = None
         if training:
-            self.target_network = DroneQNetwork().to(self.device)
+            self.target_network = self.network_type().to(self.device)
             self.target_network.load_state_dict(self.policy_network.state_dict())
             self.target_network.eval()
-            self.optimizer = torch.optim.Adam(
-                self.policy_network.parameters(), lr=0.0001
-            )
+            self.optimizer = torch.optim.Adam(self.policy_network.parameters(), lr=0.0001)
         else:
             self.policy_network.eval()
-        self.replay_buffer = deque(maxlen=20000)
-        self.successful_replay = deque(maxlen=5000)
-        self.episode_replay = {}
-        self.n_step = 1 if path_following else n_step
-        self.discount = 0.0 if path_following else DISCOUNT
+        self.replay_buffer = deque(maxlen=10000)
+        self.n_step = n_step
+        self.discount = DISCOUNT
         self.return_queues = {}
         self.pending_transitions = {}
         self.route_cursors = {}
         self.route_targets = {}
         self.assigned_routes = {}
-        self.initial_groups = {}
-        self.failed_moves = {}
         self.decision_count = 0
         self.training_steps = 0
+        self.environment_steps = 0
+        self.frame_history = {}
         self.last_loss = None
         self.last_q_abs_max = None
         self.last_target_abs_max = None
         self.max_training_q = MAX_TRAINING_Q if training else None
         self.target_sync_steps = TARGET_SYNC_STEPS
-        self.path_only = False
-        self.path_following = path_following
+        self.path_only = True
         self.reward_distance_fields = {}
         self.reward_world = None
         self.reward_topology = ()
+        self.navigation_best = {}
+        self.navigation_paid = set()
+        self.navigation_exits_paid = set()
 
     def reset(self):
         self.finish_episode()
+        self.frame_history.clear()
         self.pending_transitions.clear()
+        self.navigation_best.clear()
+        self.navigation_paid.clear()
+        self.navigation_exits_paid.clear()
         self.route_cursors.clear()
         self.route_targets.clear()
         self.assigned_routes.clear()
-        self.initial_groups.clear()
-        self.failed_moves.clear()
-        self.episode_replay.clear()
+        self.reward_distance_fields.clear()
+        self.reward_world = None
+        self.reward_topology = ()
+
+    def invalidate(self):
+        """Discard cached distance fields after environment edits."""
         self.reward_distance_fields.clear()
         self.reward_world = None
         self.reward_topology = ()
 
     def get_actions(self, simulation, routes):
         actions = []
-
         for drone in simulation.drones:
-            if getattr(drone, "in_stair_transit", False):
+            if getattr(drone, 'in_stair_transit', False):
                 actions.append(Action.STAY)
                 continue
             world = simulation.grid_world
@@ -157,112 +122,68 @@ class DQNDroneController:
                 self.pending_transitions.pop(drone, None)
                 actions.append(Action.STAY)
                 continue
-
             route = routes.get(drone, [])
             state, route_ids = self._observe(simulation, drone, route)
             legal_actions = self._legal_actions(simulation, drone)
+            if not legal_actions:
+                actions.append(Action.STAY)
+                continue
             action = self._select_action(state, legal_actions, drone, route_ids, simulation)
             if self.training:
                 self.record_transition(simulation, drone, state, action, route_ids)
             actions.append(action)
-
         return actions
 
     def _assigned_group(self, simulation, drone):
-        return [
-            evacuee for evacuee in simulation.evacuees
-            if drone.drone_id is not None and evacuee.assigned_drone_id == drone.drone_id
-        ]
-
-    def _visible_evacuees(self, simulation, drone):
-        if drone not in simulation.drones:
-            return []
-        return [
-            evacuee for evacuee in simulation.evacuees
-            if evacuee.floor_id == drone.floor_id
-            and can_see(
-                simulation.grid_world,
-                drone.floor_id,
-                drone.grid_x,
-                drone.grid_y,
-                evacuee.grid_x,
-                evacuee.grid_y,
-                radius=PATCH_RADIUS,
-            )
-        ]
+        return [evacuee for evacuee in simulation.evacuees if drone.drone_id is not None and evacuee.assigned_drone_id == drone.drone_id]
 
     def record_transition(self, simulation, drone, state, action, route_ids):
-        target_node = self.route_targets.get(drone)
-        distance_fields = self._reward_distances(simulation.grid_world, target_node)
-        initial_group = self.initial_groups.setdefault(drone, tuple(self._assigned_group(simulation, drone)))
-        visible_followers = {
-            evacuee: self._field_distance(distance_fields, (evacuee.floor_id, evacuee.grid_x, evacuee.grid_y))
-            for evacuee in self._visible_evacuees(simulation, drone)
-            if drone.drone_id is not None and evacuee.assigned_drone_id == drone.drone_id
-        }
-        position = (drone.floor_id, drone.grid_x, drone.grid_y)
-        transition = DroneTransition(
-            state=state, action=int(action), position=position, target_node=target_node,
-            route=self.assigned_routes.get(drone, ()),
-            route_cursor=self.route_cursors.get(drone, 0),
-            visible_followers=visible_followers, initial_group=initial_group,
-            evacuated_before=self._evacuated_group(simulation, initial_group),
-            active=drone in simulation.drones,
-            previous_failure=self.failed_moves.get(drone),
-            distance_fields=distance_fields,
-            drone_distance=self._field_distance(distance_fields, position),
-        )
+        transition = DroneTransition(state=state, action=int(action), position=(drone.floor_id, drone.grid_x, drone.grid_y), target_node=self.route_targets.get(drone), route=self.assigned_routes.get(drone, ()), active=drone in simulation.drones)
+        self._prepare_navigation_transition(simulation, drone, transition)
         self.pending_transitions[drone] = transition
         return transition
 
-    def learn(self, simulation, routes):
+    def learn(self, simulation, routes, *, outcomes=None):
         if not self.training:
             return
-        if self.path_following and not self.path_only:
-            raise ValueError("Path-following rewards are only supported for path-only pretraining")
-
         for drone, transition in list(self.pending_transitions.items()):
-            reward = self._transition_reward(simulation, drone, transition)
-            success = self.mission_finished(simulation, drone)
-            mission_done = success or self.mission_failed(simulation, drone)
+            if outcomes is None:
+                reward = self._transition_reward(simulation, drone, transition)
+                success = self.mission_finished(simulation, drone)
+                mission_done = success or self.mission_failed(simulation, drone)
+            else:
+                reward, success, mission_done = outcomes[drone]
             self._commit_transition(simulation, drone, transition)
-
             next_state, _ = self._observe(simulation, drone, routes.get(drone, []))
-            route_changed = tuple(routes.get(drone, ())) != transition.route
-            subgoal_reached = (self.path_following and not route_changed
-                               and self.reached_route_subgoal(simulation, drone, transition))
-            done = mission_done or subgoal_reached or (self.path_following and route_changed)
-            next_legal = self._legal_actions(simulation, drone)
-            legal_mask = np.zeros(len(Action), dtype=np.float32)
-            legal_mask[[int(candidate) for candidate in next_legal]] = 1.0
-            experience = (
-                transition.state, transition.action, reward, next_state, done, legal_mask
-            )
+            done = mission_done
+            legal_mask = self.action_mask(simulation, drone)
+            experience = (transition.state, transition.action, reward, next_state, done, legal_mask)
             queue = self.return_queues.setdefault(drone, deque())
             queue.append(experience)
             if len(queue) >= self.n_step:
                 self._emit_return(drone)
             if done:
                 self._flush_returns(drone)
-                if success or subgoal_reached:
-                    self.successful_replay.extend(self.episode_replay.get(drone, ()))
-                self.episode_replay.pop(drone, None)
-
         self.pending_transitions.clear()
-
-        if len(self.replay_buffer) >= 64:
+        self.environment_steps += 1
+        if len(self.replay_buffer) >= BATCH_SIZE:
             self.training_steps += 1
-            if self.training_steps % 4 == 0:
-                self._optimize()
+            self._optimize()
+        if self.environment_steps % self.target_sync_steps == 0:
+            self._update_target_network()
+
+    def _update_target_network(self):
+        with torch.no_grad():
+            for target, online in zip(self.target_network.parameters(), self.policy_network.parameters()):
+                target.lerp_(online, SOFT_UPDATE_TAU)
 
     def _emit_return(self, drone):
         queue = self.return_queues[drone]
         window = list(queue)[:self.n_step]
-        first, last = window[0], window[-1]
-        reward = sum(self.discount ** index * item[2] for index, item in enumerate(window))
+        first, last = (window[0], window[-1])
+        reward = sum((self.discount ** index * item[2] for index, item in enumerate(window)))
         experience = (first[0], first[1], reward, last[3], last[4], last[5], self.discount ** len(window))
         self.replay_buffer.append(experience)
-        self.episode_replay.setdefault(drone, []).append(experience)
         queue.popleft()
 
     def _flush_returns(self, drone, *, terminal=False):
@@ -277,119 +198,67 @@ class DQNDroneController:
     def finish_episode(self):
         for drone in list(self.return_queues):
             self._flush_returns(drone)
-        self.episode_replay.clear()
 
     @property
     def learning_objective(self):
-        return "immediate_path_following" if self.path_following else "mission"
+        return 'mission'
 
     @property
     def reward_version(self):
-        return PATH_FOLLOWING_REWARD_VERSION if self.path_following else REWARD_VERSION
-
-    @staticmethod
-    def reached_route_subgoal(simulation, drone, transition):
-        if not transition.active or not transition.route:
-            return False
-        floor = simulation.grid_world.floors[drone.floor_id]
-        node = (drone.floor_id, floor.cluster_grid.get(drone.grid_x, drone.grid_y))
-        return node in transition.route[transition.route_cursor:]
+        return NAVIGATION_REWARD_VERSION
 
     def _commit_transition(self, simulation, drone, transition):
-        failure_count = self._failure_count(simulation, drone, transition)
-        if failure_count:
-            self.failed_moves[drone] = (
-                (transition.position, transition.action), simulation.step_count, failure_count
-            )
-        else:
-            self.failed_moves.pop(drone, None)
+        self._commit_navigation_transition(simulation, drone, transition)
 
     def _transition_reward(self, simulation, drone, transition):
         return sum(self.reward_components(simulation, drone, transition).values())
 
-    def reward_components(self, simulation, drone, transition):
-        components = dict(time=-STEP_COST, visibility=0.0, drone_progress=0.0,
-                          followers=0.0, evacuation=0.0, completion=0.0, exit=0.0,
-                          failure=0.0, mission_failure=0.0, wall=0.0)
-        if self.path_following:
-            components["waypoint"] = 0.0
-        group = self._assigned_group(simulation, drone)
-        visible = {
-            evacuee for evacuee in self._visible_evacuees(simulation, drone)
-            if drone.drone_id is not None and evacuee.assigned_drone_id == drone.drone_id
-        }
-        target_count = min(len(group), drone_visible_evacuee_target)
-        visibility_score = min(len(visible), target_count) / target_count if target_count else 0.0
-        components["visibility"] = VISIBILITY_REWARD * visibility_score
+    def reward_components(self, simulation, drone, transition, *, timed_out=False):
+        return self._pure_navigation_rewards(simulation, drone, transition, timed_out=timed_out)
 
-        escorting = bool(transition.initial_group) and not self.path_only
-        if transition.active:
-            distance = self._field_distance(transition.distance_fields,
-                (drone.floor_id, drone.grid_x, drone.grid_y))
-            gain = self._distance_gain(transition.drone_distance, distance)
-            if gain > 0 and escorting:
-                gain *= visibility_score
-            progress_reward = PATH_FOLLOWING_PROGRESS_REWARD if self.path_following else DRONE_PROGRESS_REWARD
-            components["drone_progress"] = progress_reward * gain * (0.5 if escorting else 1.0)
-        if (
-            transition.active
-            and self._at_assigned_exit(simulation.grid_world, drone, transition.route)
-            and not simulation.grid_world.is_exit(
-                transition.position[1], transition.position[2], transition.position[0]
-            )
-        ):
-            components["exit"] = DRONE_EXIT_REWARD
-        if (self.path_following and self.reached_route_subgoal(simulation, drone, transition)
-                and not components["exit"]):
-            components["waypoint"] = PATH_FOLLOWING_CLUSTER_REWARD
-        if transition.active and self.mission_failed(simulation, drone):
-            components["mission_failure"] = -MISSION_FAILURE_PENALTY
+    def _prepare_navigation_transition(self, simulation, drone, transition):
+        target = self.route_targets.get(drone)
+        fields = self._reward_distances(simulation.grid_world, target)
+        distance = self._field_distance(fields, transition.position)
+        key = (drone, target)
+        best = min(self.navigation_best.get(key, distance), distance)
+        self.navigation_best[key] = best
+        transition.navigation_target = target
+        transition.navigation_fields = fields
+        transition.navigation_best = best
+        transition.navigation_paid = key in self.navigation_paid
+        transition.navigation_exit_paid = drone in self.navigation_exits_paid
 
-        follower_progress = []
-        for evacuee, previous_distance in transition.visible_followers.items():
-            distance = self._field_distance(transition.distance_fields,
-                (evacuee.floor_id, evacuee.grid_x, evacuee.grid_y))
-            follower_progress.append(self._distance_gain(previous_distance, distance))
-        if follower_progress:
-            components["followers"] = FOLLOWER_PROGRESS_REWARD * sum(follower_progress) / len(follower_progress)
+    def _pure_navigation_rewards(self, simulation, drone, transition, *, timed_out=False):
+        position = (drone.floor_id, drone.grid_x, drone.grid_y)
+        distance = self._field_distance(transition.navigation_fields, position)
+        best = transition.navigation_best
+        gain = max(0.0, best - distance) if np.isfinite(best) and np.isfinite(distance) else 0.0
+        floor = simulation.grid_world.floors[drone.floor_id]
+        node = (drone.floor_id, floor.cluster_grid.get(drone.grid_x, drone.grid_y))
+        reached = node == transition.navigation_target
+        success = self._at_assigned_exit(simulation.grid_world, drone, transition.route)
+        return dict(time=-0.01, progress=0.05 * gain, failure=0.0, waypoint=1.0 if reached and (not success) and (not transition.navigation_paid) else 0.0, exit=10.0 if success and (not transition.navigation_exit_paid) else 0.0, mission_failure=-1.0 if timed_out or self.mission_failed(simulation, drone) else 0.0)
 
-        if transition.initial_group:
-            evacuated = self._evacuated_group(simulation, transition.initial_group)
-            components["evacuation"] = FOLLOWER_EXIT_REWARD * len(evacuated - transition.evacuated_before) / len(transition.initial_group)
-            if len(evacuated) == len(transition.initial_group) and len(transition.evacuated_before) < len(evacuated):
-                components["completion"] = GROUP_COMPLETION_REWARD
-
-        if self._failure_count(simulation, drone, transition) > FAILED_MOVE_GRACE:
-            components["failure"] = -FAILED_MOVE_PENALTY
-
-        if drone in simulation.drones and not simulation.touching_exit(drone):
-            components["wall"] = -self._wall_proximity_penalty(simulation, drone.floor_id, drone.grid_x, drone.grid_y)
-
-        return components
-
-    @staticmethod
-    def _evacuated_group(simulation, initial_group):
-        inside = set(simulation.evacuees)
-        return frozenset(person for person in initial_group if person not in inside and simulation.touching_exit(person))
+    def _commit_navigation_transition(self, simulation, drone, transition):
+        position = (drone.floor_id, drone.grid_x, drone.grid_y)
+        distance = self._field_distance(transition.navigation_fields, position)
+        key = (drone, transition.navigation_target)
+        self.navigation_best[key] = min(self.navigation_best[key], distance)
+        floor = simulation.grid_world.floors[drone.floor_id]
+        if (drone.floor_id, floor.cluster_grid.get(drone.grid_x, drone.grid_y)) == transition.navigation_target:
+            self.navigation_paid.add(key)
+        if self._at_assigned_exit(simulation.grid_world, drone, transition.route):
+            self.navigation_exits_paid.add(drone)
 
     def group_finished(self, simulation, drone):
-        if self.path_only:
-            return self._at_assigned_exit(simulation.grid_world, drone, self.assigned_routes.get(drone, ()))
-        initial_group = self.initial_groups.get(drone, ())
-        if not initial_group:
-            return simulation.touching_exit(drone)
-        return len(self._evacuated_group(simulation, initial_group)) == len(initial_group)
+        return self.mission_finished(simulation, drone)
 
     def mission_finished(self, simulation, drone):
-        return (
-            self._at_assigned_exit(simulation.grid_world, drone, self.assigned_routes.get(drone, ()))
-            and self.group_finished(simulation, drone)
-        )
+        return self._at_assigned_exit(simulation.grid_world, drone, self.assigned_routes.get(drone, ()))
 
     def mission_failed(self, simulation, drone):
-        return drone not in simulation.drones and not self._at_assigned_exit(
-            simulation.grid_world, drone, self.assigned_routes.get(drone, ())
-        )
+        return drone not in simulation.drones and (not self._at_assigned_exit(simulation.grid_world, drone, self.assigned_routes.get(drone, ())))
 
     @staticmethod
     def _at_assigned_exit(world, drone, route):
@@ -397,86 +266,44 @@ class DQNDroneController:
             return False
         return route[-1] == (drone.floor_id, world.floors[drone.floor_id].cluster_grid.get(drone.grid_x, drone.grid_y))
 
-    @staticmethod
-    def _failure_count(simulation, drone, transition):
-        position = (drone.floor_id, drone.grid_x, drone.grid_y)
-        if not transition.active or transition.action == int(Action.STAY) or position != transition.position:
-            return 0
-        previous = transition.previous_failure
-        signature = (transition.position, transition.action)
-        return (
-            previous[2] + 1 if previous is not None and previous[0] == signature
-            and previous[1] == simulation.step_count - 1 else 1
-        )
-
     def save(self, path):
-        torch.save({
-            "observation_version": OBSERVATION_VERSION,
-            "reward_version": self.reward_version,
-            "learning_objective": self.learning_objective,
-            "n_step": self.n_step,
-            "discount": self.discount,
-            "observation_shape": (CHANNELS, PATCH_SIZE, PATCH_SIZE),
-            "state_dict": self.policy_network.state_dict(),
-        }, path)
+        torch.save({'frame_stack': HISTORY_FRAMES, 'batch_size': BATCH_SIZE, 'replay_capacity': self.replay_buffer.maxlen, 'target_update_steps': self.target_sync_steps, 'soft_update_tau': SOFT_UPDATE_TAU, 'observation_version': self.observation_version, 'reward_version': self.reward_version, 'learning_objective': self.learning_objective, 'n_step': self.n_step, 'discount': self.discount, 'observation_shape': self.observation_shape, 'feature_count': self.feature_count, 'state_dict': self.policy_network.state_dict()}, path)
 
     def load(self, path):
         try:
             checkpoint = torch.load(path, map_location=self.device, weights_only=True)
         except FileNotFoundError:
             return False
-
-        if (
-            checkpoint.get("observation_version") != OBSERVATION_VERSION
-            or tuple(checkpoint.get("observation_shape", ())) != (CHANNELS, PATCH_SIZE, PATCH_SIZE)
-        ):
-            logger.warning("Drone model at %s uses incompatible observations; retrain with train_drones.py", path)
+        if checkpoint.get('observation_version') != self.observation_version or tuple(checkpoint.get('observation_shape', ())) != self.observation_shape or checkpoint.get('feature_count', 0) != self.feature_count:
+            logger.warning('Drone model at %s uses incompatible observations; retrain with train_drones.py', path)
             return False
-        state_dict = checkpoint["state_dict"]
+        state_dict = checkpoint['state_dict']
         self.policy_network.load_state_dict(state_dict)
         if self.target_network is not None:
             self.target_network.load_state_dict(state_dict)
         return True
 
     @staticmethod
-    def _distance_gain(previous, current):
-        if np.isfinite(previous) and np.isfinite(current):
-            return previous - current
-        if np.isfinite(previous):
-            return -1.0
-        if np.isfinite(current):
-            return 1.0
-        return 0.0
-
-    def _target_distance(self, world, target_node, floor_id, x, y):
-        return self._field_distance(self._reward_distances(world, target_node), (floor_id, x, y))
-
-    @staticmethod
     def _field_distance(fields, position):
         floor_id, x, y = position
         if not fields or floor_id not in fields:
-            return float("inf")
+            return float('inf')
         distances = fields[floor_id]
         if not (0 <= y < distances.shape[0] and 0 <= x < distances.shape[1]):
-            return float("inf")
+            return float('inf')
         return float(distances[y, x])
 
     def _reward_distances(self, world, target_node):
         if target_node is None:
             return None
-        topology = tuple((floor_id, floor.cluster_grid, floor.distance_map)
-                         for floor_id, floor in world.floors.items())
-        same_topology = len(topology) == len(self.reward_topology) and all(
-            first[0] == second[0] and first[1] is second[1] and first[2] is second[2]
-            for first, second in zip(topology, self.reward_topology)
-        )
+        topology = tuple(((floor_id, floor.cluster_grid, floor.distance_map) for floor_id, floor in world.floors.items()))
+        same_topology = len(topology) == len(self.reward_topology) and all((first[0] == second[0] and first[1] is second[1] and (first[2] is second[2]) for first, second in zip(topology, self.reward_topology)))
         if self.reward_world is not world or not same_topology:
             self.reward_distance_fields.clear()
-            self.reward_world, self.reward_topology = world, topology
+            self.reward_world, self.reward_topology = (world, topology)
         if target_node in self.reward_distance_fields:
             return self.reward_distance_fields[target_node]
-        distances = {floor_id: np.full((floor.map_grid.height, floor.map_grid.width), np.inf, dtype=np.float32)
-                     for floor_id, floor in world.floors.items()}
+        distances = {floor_id: np.full((floor.map_grid.height, floor.map_grid.width), np.inf, dtype=np.float32) for floor_id, floor in world.floors.items()}
         pending = deque()
         floor_id, cluster_id = target_node
         for x, y in world.floors[floor_id].cluster_grid.clusters[cluster_id].cells:
@@ -488,8 +315,8 @@ class DQNDroneController:
             floor_id, x, y = pending.popleft()
             next_distance = distances[floor_id][y, x] + 1
             for dx, dy in ACTION_DIRECTIONS.values():
-                nx, ny = x + dx, y + dy
-                if (dx or dy) and world.can_move_to(nx, ny, floor_id) and distances[floor_id][ny, nx] > next_distance:
+                nx, ny = (x + dx, y + dy)
+                if (dx or dy) and world.can_move_to(nx, ny, floor_id) and (distances[floor_id][ny, nx] > next_distance):
                     distances[floor_id][ny, nx] = next_distance
                     pending.append((floor_id, nx, ny))
             node = world.stair_cluster_at(floor_id, x, y)
@@ -507,37 +334,8 @@ class DQNDroneController:
         self.reward_distance_fields[target_node] = distances
         return distances
 
-    def _sample_replay(self, batch_size=64):
-        successful_count = min(batch_size // 4, len(self.successful_replay))
-        batch = random.sample(self.successful_replay, successful_count)
-        batch.extend(random.sample(self.replay_buffer, batch_size - successful_count))
-        random.shuffle(batch)
-        return batch
-
-    def _wall_proximity_penalty(self, simulation, floor_id, x, y):
-        floor = simulation.grid_world.floors[floor_id]
-        grid = floor.map_grid
-        closest_wall = WALL_CLEARANCE_RADIUS + 1
-
-        for delta_y in range(-WALL_CLEARANCE_RADIUS, WALL_CLEARANCE_RADIUS + 1):
-            max_delta_x = WALL_CLEARANCE_RADIUS - abs(delta_y)
-            for delta_x in range(-max_delta_x, max_delta_x + 1):
-                distance = abs(delta_x) + abs(delta_y)
-                neighbor_x = x + delta_x
-                neighbor_y = y + delta_y
-
-                if not grid.in_bounds(neighbor_x, neighbor_y):
-                    closest_wall = min(closest_wall, distance)
-                elif (
-                    grid.get(neighbor_x, neighbor_y) == CellType.WALL
-                    or floor.temporary_wall_grid.get(neighbor_x, neighbor_y)
-                ):
-                    closest_wall = min(closest_wall, distance)
-
-        if closest_wall > WALL_CLEARANCE_RADIUS:
-            return 0.0
-
-        return WALL_PROXIMITY_PENALTY * (WALL_CLEARANCE_RADIUS + 1 - closest_wall) / WALL_CLEARANCE_RADIUS
+    def _sample_replay(self, batch_size=BATCH_SIZE):
+        return random.sample(self.replay_buffer, batch_size)
 
     def _observe(self, simulation, drone, route):
         world = simulation.grid_world
@@ -545,184 +343,127 @@ class DQNDroneController:
         cluster_grid = floor.cluster_grid
         route = list(route)
         if self.assigned_routes.get(drone) != tuple(route):
-            self._flush_returns(drone, terminal=self.path_following)
-            if self.path_following:
-                self.episode_replay.pop(drone, None)
+            self._flush_returns(drone)
             self.route_cursors.pop(drone, None)
         self.assigned_routes[drone] = tuple(route)
         route_cursor = self.route_cursors.get(drone, 0)
         current_cluster = cluster_grid.get(drone.grid_x, drone.grid_y)
         current_node = (drone.floor_id, current_cluster)
-
         if current_node in route:
-            matching_indices = [
-                index for index, node in enumerate(route)
-                if node == current_node and index >= route_cursor
-            ]
+            matching_indices = [index for index, node in enumerate(route) if node == current_node and index >= route_cursor]
             if matching_indices:
                 current_index = matching_indices[-1]
                 route_cursor = min(current_index + 1, len(route))
                 self.route_cursors[drone] = route_cursor
-
         remaining_route = route[route_cursor:] if route else []
         route_ids = set(route[max(0, route_cursor - 1):]) if route else set()
-        target_node = remaining_route[0] if remaining_route else (route[-1] if route else None)
+        target_node = remaining_route[0] if remaining_route else route[-1] if route else None
         self.route_targets[drone] = target_node
-
-        target_cells = []
-        target_floor_id = drone.floor_id
-        if target_node is not None:
-            target_floor_id, target_cluster_id = target_node
-            target_cells = world.floors[target_floor_id].cluster_grid.clusters[
-                target_cluster_id
-            ].cells
-
         state = np.zeros((CHANNELS, PATCH_SIZE, PATCH_SIZE), dtype=np.float32)
-        visible = self._visible_evacuees(simulation, drone)
-        visible_cells = {(evacuee.grid_x, evacuee.grid_y): evacuee for evacuee in visible}
-        visible_assigned_count = sum(
-            drone.drone_id is not None and evacuee.assigned_drone_id == drone.drone_id
-            for evacuee in visible
-        )
-        state[VISIBLE_GROUP_COUNT_CHANNEL].fill(
-            min(visible_assigned_count, drone_visible_evacuee_target) / drone_visible_evacuee_target
-        )
-        if target_cells and target_floor_id == drone.floor_id:
-            target_x = sum(x for x, _ in target_cells) / len(target_cells)
-            target_y = sum(y for _, y in target_cells) / len(target_cells)
-            normalization = max(floor.map_grid.width, floor.map_grid.height, 1)
-            direction_x = (target_x - drone.grid_x) / normalization
-            direction_y = (target_y - drone.grid_y) / normalization
-        else:
-            direction_x = direction_y = 0.0
-
-        floor_channel = drone.floor_id / max(len(world.floors) - 1, 1)
-        for patch_y in range(PATCH_SIZE):
-            for patch_x in range(PATCH_SIZE):
-                x = drone.grid_x + patch_x - PATCH_RADIUS
-                y = drone.grid_y + patch_y - PATCH_RADIUS
+        for py in range(PATCH_SIZE):
+            for px in range(PATCH_SIZE):
+                x = drone.grid_x + px - PATCH_RADIUS
+                y = drone.grid_y + py - PATCH_RADIUS
                 if not floor.map_grid.in_bounds(x, y):
-                    state[0, patch_y, patch_x] = 1.0
-                    state[9, patch_y, patch_x] = floor_channel
+                    state[0, py, px] = 1.0
                     continue
-
-                cell_type = floor.simulation_grid.get(x, y)
-                terrain_type = floor.map_grid.get(x, y)
-                if cell_type == CellType.WALL or floor.temporary_wall_grid.get(x, y):
-                    state[0, patch_y, patch_x] = 1.0
-                evacuee = visible_cells.get((x, y))
-                if evacuee is not None:
-                    channel = (
-                        ASSIGNED_EVACUEES_CHANNEL
-                        if drone.drone_id is not None and evacuee.assigned_drone_id == drone.drone_id
-                        else 1
-                    )
-                    state[channel, patch_y, patch_x] = 1.0
-                if (
-                    cell_type == CellType.DRONE
-                    and (x, y) != (drone.grid_x, drone.grid_y)
-                ):
-                    state[2, patch_y, patch_x] = 1.0
-
-                cluster_id = cluster_grid.get(x, y)
-                cluster_node = (drone.floor_id, cluster_id)
-                if cluster_id is not None and cluster_id >= 0 and cluster_node in route_ids:
-                    state[3, patch_y, patch_x] = 1.0
-                if (
-                    target_node is not None
-                    and target_node[0] == drone.floor_id
-                    and cluster_id == target_node[1]
-                ):
-                    state[4, patch_y, patch_x] = 1.0
-                if terrain_type == CellType.STAIRS:
-                    state[5, patch_y, patch_x] = 1.0
-                if terrain_type == CellType.EXIT:
-                    state[6, patch_y, patch_x] = 1.0
-
-                state[7, patch_y, patch_x] = direction_x
-                state[8, patch_y, patch_x] = direction_y
-                state[9, patch_y, patch_x] = floor_channel
-
-        return state, route_ids
+                state[0, py, px] = not world.can_move_to(x, y, drone.floor_id)
+                state[1, py, px] = target_node is not None and (drone.floor_id, cluster_grid.get(x, y)) == target_node
+        offsets = np.zeros(2, dtype=np.float32)
+        if target_node is not None and target_node[0] == drone.floor_id:
+            cells = floor.cluster_grid.clusters[target_node[1]].cells
+            walkable = [(cx, cy) for cx, cy in cells if world.can_move_to(cx, cy, drone.floor_id)]
+            if walkable:
+                center_x = sum((cx for cx, _ in cells)) / len(cells)
+                center_y = sum((cy for _, cy in cells)) / len(cells)
+                target_x, target_y = min(walkable, key=lambda cell: ((cell[0] - center_x) ** 2 + (cell[1] - center_y) ** 2, cell[1], cell[0]))
+                offsets[:] = ((target_x - drone.grid_x) / floor.map_grid.width, (target_y - drone.grid_y) / floor.map_grid.height)
+        tick = simulation.step_count
+        previous = self.frame_history.get(drone)
+        if previous is None:
+            frames = deque((state.copy() for _ in range(HISTORY_FRAMES)), maxlen=HISTORY_FRAMES)
+        else:
+            observed_tick, frames = previous
+            if tick == observed_tick:
+                frames[-1] = state.copy()
+            else:
+                frames.append(state.copy())
+        self.frame_history[drone] = (tick, frames)
+        return ({'map': np.concatenate(tuple(frames), axis=0), 'features': offsets}, route_ids)
 
     def _legal_actions(self, simulation, drone):
-        if drone not in simulation.drones or simulation.touching_exit(drone):
+        if drone not in simulation.drones or simulation.touching_exit(drone) or drone.in_stair_transit:
             return [Action.STAY]
         world = simulation.grid_world
-        legal_actions = [Action.STAY]
-
+        legal_actions = []
         for action, (dx, dy) in ACTION_DIRECTIONS.items():
             if action == Action.STAY:
                 continue
-
             x = drone.grid_x + dx
             y = drone.grid_y + dy
             if not world.can_move_to(x, y, drone.floor_id):
                 continue
             legal_actions.append(action)
-
-        if world.stair_arrival(drone, "drone") is not None:
-            legal_actions.append(Action.USE_STAIRS)
-
         return legal_actions
 
+    def action_mask(self, simulation, drone):
+        """Use the same movement rules for acting and replay bootstrap targets."""
+        mask = np.zeros(len(Action), dtype=np.int8)
+        mask[[int(action) for action in self._legal_actions(simulation, drone) if action in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)]] = 1
+        return mask
+
     def _select_action(self, state, legal_actions, drone, route_ids, simulation):
+        legal_actions = [action for action in legal_actions if action in (Action.UP, Action.DOWN, Action.LEFT, Action.RIGHT)]
+        if not legal_actions:
+            raise RuntimeError('Drone has no legal movement action')
         self.decision_count += 1
         epsilon = self.epsilon if self.training else 0.0
         if random.random() < epsilon:
-            return random.choice(legal_actions)
-
+            return self._explore(legal_actions, drone)
         with torch.no_grad():
-            tensor = torch.from_numpy(state).unsqueeze(0).to(self.device)
-            q_values = self.policy_network(tensor)[0].cpu().numpy()
+            q_values = self.policy_network(self._state_batch((state,)))[0].cpu().numpy()
         legal_values = q_values[[int(action) for action in legal_actions]]
-        if not np.isfinite(legal_values).all() or (
-            self.max_training_q is not None and np.max(np.abs(legal_values)) > self.max_training_q
-        ):
-            raise RuntimeError("Invalid or divergent DQN action values; start from fresh weights")
-
+        if not np.isfinite(legal_values).all() or (self.max_training_q is not None and np.max(np.abs(legal_values)) > self.max_training_q):
+            raise RuntimeError('Invalid or divergent DQN action values; start from fresh weights')
         scores = np.full(len(Action), -np.inf, dtype=np.float32)
         for action in legal_actions:
             scores[int(action)] = q_values[int(action)]
-
         return Action(int(np.argmax(scores)))
+
+    def _explore(self, legal_actions, drone):
+        return random.choice(legal_actions)
+
+    def _state_batch(self, states):
+        return tuple((torch.from_numpy(np.stack([state[key] for state in states])).to(self.device) for key in ('map', 'features')))
 
     def _optimize(self):
         if self.target_network is None or self.optimizer is None:
-            raise RuntimeError("DQN optimization requires a training controller")
-
+            raise RuntimeError('DQN optimization requires a training controller')
         batch = self._sample_replay()
         states, actions, rewards, next_states, dones, next_legal_masks, discounts = zip(*batch)
-        states = torch.from_numpy(np.stack(states)).to(self.device)
+        states = self._state_batch(states)
         actions = torch.tensor(actions, dtype=torch.long, device=self.device).unsqueeze(1)
         rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
-        next_states = torch.from_numpy(np.stack(next_states)).to(self.device)
+        next_states = self._state_batch(next_states)
         dones = torch.tensor(dones, dtype=torch.float32, device=self.device)
         next_legal_masks = torch.from_numpy(np.stack(next_legal_masks)).to(self.device)
         discounts = torch.tensor(discounts, dtype=torch.float32, device=self.device)
-
         current_q_values = self.policy_network(states).gather(1, actions).squeeze(1)
         with torch.no_grad():
             targets = rewards.clone()
             if torch.any(discounts > 0):
-                next_actions = self.policy_network(next_states).masked_fill(
-                    next_legal_masks == 0, -torch.inf
-                ).argmax(dim=1, keepdim=True)
+                next_actions = self.policy_network(next_states).masked_fill(next_legal_masks == 0, -torch.inf).argmax(dim=1, keepdim=True)
                 next_q_values = self.target_network(next_states).gather(1, next_actions).squeeze(1)
-                targets += discounts * next_q_values * (1.0 - dones)
-
+                targets += discounts * next_q_values * (1.0 - dones) * next_legal_masks.any(dim=1)
         loss = nn.functional.smooth_l1_loss(current_q_values, targets)
         self.last_loss = float(loss.detach())
         self.last_q_abs_max = float(current_q_values.detach().abs().max())
         self.last_target_abs_max = float(targets.abs().max())
         if not torch.isfinite(loss):
-            raise RuntimeError("Non-finite DQN loss; stopping training")
+            raise RuntimeError('Non-finite DQN loss; stopping training')
         if self.max_training_q is not None and max(self.last_q_abs_max, self.last_target_abs_max) > self.max_training_q:
-            raise RuntimeError(f"DQN values exceeded {self.max_training_q:g}; stopping divergent training")
+            raise RuntimeError(f'DQN values exceeded {self.max_training_q:g}; stopping divergent training')
         self.optimizer.zero_grad()
         loss.backward()
         nn.utils.clip_grad_norm_(self.policy_network.parameters(), 1.0)
         self.optimizer.step()
-
-        if self.training_steps % self.target_sync_steps == 0:
-            self.target_network.load_state_dict(self.policy_network.state_dict())

@@ -19,7 +19,7 @@ cluster_size = 3
 drone_vision_radius = 8
 evacuee_vision_radius = 10
 q_table_path = str(PROJECT_ROOT / "models" / "evacuee_q_table.npy")
-drone_model_path = str(PROJECT_ROOT / "models" / "drone_path_following.pt")
+drone_model_path = str(PROJECT_ROOT / "models" / "bestModelDNQNEW.pt")
 
 camera_offset_x = 0
 camera_offset_y = 0

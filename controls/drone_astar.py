@@ -88,6 +88,32 @@ class AStarDroneController:
         floor_id, x, y = position
         return floor_id, self._world.floors[floor_id].cluster_grid.get(x, y)
 
+    def route_guidance(self, simulation, drone, route):
+        """Return a suggested cell path and its goal for a separate policy."""
+        self._sync_world(simulation.grid_world)
+        if not route or drone not in simulation.drones or drone.in_stair_transit:
+            return (), None
+        route = tuple(route)
+        if route != self._routes.get(drone):
+            self.invalidate(drone)
+            self._routes[drone] = route
+        position = self._position(drone)
+        node = self._node(position)
+        if node in route:
+            cursor = route.index(node)
+        else:
+            cursor = self.route_cursors.get(drone, 0)
+        if self.route_cursors.get(drone) != cursor:
+            self.paths.pop(drone, None)
+        self.route_cursors[drone] = cursor
+        path = self.paths.get(drone)
+        if path and len(path) > 1 and path[1] == position:
+            path.popleft()
+        if not path or path[0] != position:
+            path = self._plan(drone, route, cursor, set())
+        goal = self.planned_windows[drone][-1] if path else route[min(cursor + self.lookahead, len(route) - 1)]
+        return tuple(path or ()), goal
+
     def get_actions(self, simulation, routes=None):
         self._sync_world(simulation.grid_world)
         if routes is None:
@@ -276,10 +302,13 @@ class AStarDroneController:
 
     def _cell_cost(self, position):
         floor_id, x, y = position
+        clearance = self.wall_distances(floor_id)[y][x]
+        return 1.0 + self.wall_cost * max(0, self.wall_clearance - clearance) ** 2
+
+    def wall_distances(self, floor_id):
         if floor_id not in self._clearances:
             self._clearances[floor_id] = self._wall_distances(floor_id)
-        clearance = self._clearances[floor_id][y][x]
-        return 1.0 + self.wall_cost * max(0, self.wall_clearance - clearance) ** 2
+        return self._clearances[floor_id]
 
     def _wall_distances(self, floor_id):
         floor = self._world.floors[floor_id]

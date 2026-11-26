@@ -176,9 +176,12 @@ class TrainingFloorViewer:
                 ):
                     self.toggle_rendering()
 
-    def update(self, env, episode, episodes, reward):
+    def update(self, env, episode, episodes, reward, should_stop=None):
         self._events()
         while self.running and self.paused:
+            if should_stop is not None and should_stop():
+                self.running = False
+                break
             self.draw(env, episode, episodes, reward)
             self.clock.tick(30)
             self._events()
