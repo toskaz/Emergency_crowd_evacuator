@@ -174,7 +174,7 @@ class ProgramState:
 
     def status_lines(self, context):
         mode = (
-            "CNN-DQN + cluster route"
+            ("DQN" if context.simulation_options.rl_drones else "A*")
             if context.simulation_options.autonomous_drones
             else "manual"
         )
@@ -198,6 +198,8 @@ class ProgramState:
             f"Step: {context.simulation.step_count if context.simulation else 0}",
             f"Evacuated: {evacuated}/{total}",
         ]
+        if getattr(context, "drone_mode_notice", ""):
+            lines.append(context.drone_mode_notice)
         world = context.simulation.grid_world if context.simulation else None
         if world and context.link_stairs_mode:
             if world.pending_stair_endpoint is not None:
@@ -3745,7 +3747,7 @@ class SimulationRunningState(ProgramState):
     can_pan = True
     render_options_enabled = True
     floor_switch_enabled = True
-    key_bindings = ()
+    key_bindings = ("L: Toggle A* / DQN drones",)
 
     def __init__(self):
         super().__init__()
@@ -4041,6 +4043,12 @@ class SimulationRunningState(ProgramState):
         elif key == pygame.K_h:
             program.view_options.show_assignments = not program.view_options.show_assignments
             self._rebuild_ui(program)
+        elif key == pygame.K_x:
+            program.transition_to(ResultsState())
+        elif key == pygame.K_f:
+            program.simulation_options.autonomous_drones = not program.simulation_options.autonomous_drones
+        elif key == pygame.K_l:
+            program.toggle_drone_policy()
         elif key == pygame.K_r:
             if program.simulation:
                 program.simulation.grid_world.clear_temporary_walls()
@@ -4140,10 +4148,7 @@ class SimulationRunningState(ProgramState):
                 evacuee_actions = get_actions(program.simulation.evacuees, options.action)
 
             if options.autonomous_drones and program.drone_controller:
-                drone_actions = program.drone_controller.get_actions(
-                    program.simulation,
-                    program.drone_routes,
-                )
+                drone_actions = program.autonomous_drone_actions()
             else:
                 drone_actions = get_actions(program.simulation.drones, options.action)
 

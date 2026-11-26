@@ -1,6 +1,7 @@
 from pathlib import Path
 from dataclasses import dataclass
 import logging
+import pickle
 
 import pygame
 import pygame_gui
@@ -13,7 +14,7 @@ from graphics.window import Window
 from graphics.fonts import init_ui_manager_fonts
 from map.floorplan_loader import build_aligned_reference_surface, restore_reference_image
 from simulation import Simulation
-from utils.config import drawing_size, q_table_path
+from utils.config import drawing_size, drone_model_path, q_table_path
 from utils.program_state import MainMenuState
 import utils.config as config
 
@@ -45,6 +46,7 @@ class SimulationOptions:
     action: Action = Action.STAY
     autonomous_drones: bool = True
     rl_evacuees: bool = True
+    rl_drones: bool = False
 
 
 class ProgramContext:
@@ -66,6 +68,8 @@ class ProgramContext:
         self.simulation = None
         self.window = None
         self.drone_controller = None
+        self.rl_drone_controller = None
+        self.drone_mode_notice = ""
         self.rl_evacuee_controller = None
         self.coordinator = None
         self.imported_image_path = None
@@ -124,6 +128,36 @@ class ProgramContext:
             active_floor.view_drawing_size = int(getattr(config, "drawing_size", 8))
             active_floor.view_camera_offset_x = int(getattr(config, "camera_offset_x", 0))
             active_floor.view_camera_offset_y = int(getattr(config, "camera_offset_y", 0))
+            
+    def toggle_drone_policy(self):
+        options = self.simulation_options
+        self.drone_mode_notice = ""
+        if options.rl_drones:
+            options.rl_drones = False
+            self.drone_controller.reset()
+            return
+        if self.rl_drone_controller is None:
+            if not Path(drone_model_path).is_file():
+                self.drone_mode_notice = "Notice: Train and save models/bestModelDNQNEW.pt before selecting DQN drones."
+                return
+            from controls.drone_dqn import DQNDroneController
+
+            controller = DQNDroneController(training=False)
+            try:
+                if not controller.load(drone_model_path):
+                    raise ValueError("Incompatible drone observations")
+            except (ValueError, RuntimeError, KeyError, OSError, EOFError, pickle.UnpicklingError):
+                logger.exception("Could not load DQN drone checkpoint")
+                self.drone_mode_notice = "Notice: The DQN drone model is incompatible or unreadable."
+                return
+            self.rl_drone_controller = controller
+        self.rl_drone_controller.reset()
+        options.autonomous_drones = True
+        options.rl_drones = True
+
+    def autonomous_drone_actions(self):
+        controller = self.rl_drone_controller if self.simulation_options.rl_drones else self.drone_controller
+        return controller.get_actions(self.simulation, self.drone_routes)
 
     def initialize_world(self, map_grid):
         if self.simulation is None:
@@ -249,14 +283,18 @@ class ProgramContext:
         )
         if self.drone_controller is not None:
             self.drone_controller.invalidate()
+        if self.rl_drone_controller is not None:
+            self.rl_drone_controller.reset()
 
     def replan_drone_routes_after_hazard(self):
         if self.coordinator is None or not self.simulation:
             return
         if self.rl_evacuee_controller is not None and hasattr(self.rl_evacuee_controller, "path_cache"):
             self.rl_evacuee_controller.path_cache.clear()
-        self.drone_routes, replanned_drones = self.coordinator.on_environment_changed(
+        self.drone_routes, _ = self.coordinator.on_environment_changed(
             self.simulation.drones
         )
         if self.drone_controller is not None:
             self.drone_controller.invalidate()
+        if self.rl_drone_controller is not None:
+            self.rl_drone_controller.invalidate()

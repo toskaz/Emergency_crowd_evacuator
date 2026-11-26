@@ -20,6 +20,7 @@ BLOCKED_PATTERNS = 16
 EXIT_REACH = 10
 PATH_SEARCH_LIMIT = 80
 PANIC_CHANCE = 0.65
+GROUP_SWITCH_TICKS = 30
 
 LEARNING_RATE = 0.1
 DISCOUNT = 0.9
@@ -46,6 +47,7 @@ class QLearningFollowController:
         self.path_cache = {}
         self.exit_cells = {}
         self.failed_moves = {}
+        self._group_follow_streaks = {}
 
     def reset(self):
         self.last_seen.clear()
@@ -53,6 +55,7 @@ class QLearningFollowController:
         self.path_cache.clear()
         self.exit_cells.clear()
         self.failed_moves.clear()
+        self._group_follow_streaks.clear()
 
     def save(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -65,13 +68,29 @@ class QLearningFollowController:
         return True
 
     def get_actions(self, simulation):
-        leaders = find_leaders(simulation)
+        leaders = find_leaders(simulation, following_only=True)
+        tick = simulation.step_count
+        active_streaks = {}
         for evacuee, leader in leaders.items():
             if leader is not None:
                 evacuee.has_been_guided = True
             while leader in leaders:
                 leader = leaders[leader]
             self.last_seen[evacuee] = (leader.floor_id, leader.grid_x, leader.grid_y)
+            group_id = leader.drone_id
+            if group_id is None or group_id == evacuee.assigned_drone_id:
+                continue
+
+            previous_group, first_tick, last_tick = self._group_follow_streaks.get(
+                evacuee, (None, tick, tick)
+            )
+            if previous_group != group_id or last_tick not in (tick - 1, tick):
+                first_tick = tick
+            if tick - first_tick + 1 >= GROUP_SWITCH_TICKS:
+                evacuee.assigned_drone_id = group_id
+            else:
+                active_streaks[evacuee] = (group_id, first_tick, tick)
+        self._group_follow_streaks = active_streaks
         return [self.decide(simulation, evacuee, leaders.get(evacuee)) for evacuee in simulation.evacuees]
 
     def decide(self, simulation, evacuee, leader):
@@ -168,7 +187,7 @@ class QLearningFollowController:
             return 0.0
 
         still_inside = set(simulation.evacuees)
-        leaders = find_leaders(simulation)
+        leaders = find_leaders(simulation, following_only=True)
         total_reward = 0.0
         for evacuee in list(self.failed_moves):
             if evacuee not in self.pending:
@@ -232,17 +251,23 @@ class QLearningFollowController:
         self.q_table[state][int(action)] = current + LEARNING_RATE * (target - current)
 
 
-def find_leaders(simulation):
+def find_leaders(simulation, *, following_only=False):
+    """Resolve visible chains rooted at drones without changing assignments."""
     world = simulation.grid_world
     leaders = {}
-    guides = list(simulation.drones)
+    guides = [drone for drone in simulation.drones if not drone.in_stair_transit]
+    evacuees = [
+        person for person in simulation.evacuees
+        if not person.in_stair_transit
+        and (not following_only or exit_distance(world, person) > EXIT_REACH)
+    ]
     guides_by_group = {}
     for drone in guides:
         guides_by_group.setdefault(drone.drone_id, []).append(drone)
 
     while True:
         found_new_leader = False
-        for evacuee in simulation.evacuees:
+        for evacuee in evacuees:
             if evacuee in leaders or evacuee.assigned_drone_id is None:
                 continue
             same_group = guides_by_group.get(evacuee.assigned_drone_id, [])
@@ -256,7 +281,7 @@ def find_leaders(simulation):
         if found_new_leader:
             continue
 
-        for evacuee in simulation.evacuees:
+        for evacuee in evacuees:
             if evacuee in leaders:
                 continue
             leader = nearest_visible(world, evacuee, guides)

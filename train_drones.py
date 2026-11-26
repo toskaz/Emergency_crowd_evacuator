@@ -1,4 +1,3 @@
-
 import argparse
 from collections import deque
 from contextlib import contextmanager
@@ -10,42 +9,39 @@ import random
 from pathlib import Path
 import signal
 import time
-
 import numpy as np
 import torch
-
 from training.drone_env import DroneNavigationEnv
-from controls.drone_dqn import PATH_FOLLOWING_REWARD_VERSION, REWARD_VERSION
-from training.layouts import CURRICULUM_STAGES, LAYOUT_KINDS
+from controls.drone_dqn import NAVIGATION_REWARD_VERSION
+from training.layouts import NAVIGATION_STAGES, LAYOUT_KINDS
 from utils.config import drone_model_path
-
-
-EPISODES = 2000
+EPISODES = 40000
 MAX_EPISODE_STEPS = None
-EPSILON_START = 0.4
-EPSILON_END = 0.03
-EPSILON_DECAY_STEPS = 100_000
-EPSILON_STAGE_EPISODES = 200
-GREEDY_EPISODE_EVERY = 5
+EPSILON_START = 1.0
+EPSILON_STAGE_START = 0.5
+EPSILON_STAGE_STARTS = {'obstacles': 0.5, 'big': 0.15}
+EPSILON_END = 0.1
+EPSILON_STAGE_ENDS = {'basic': 0.1, 'big': 0.05}
+EPSILON_DECAY_STEPS = 100000
+EPSILON_STAGE_DECAY_STEPS = {'basic': 100000, 'obstacles': 200000, 'big': 150000}
 REPORT_EVERY = 25
-EVALUATE_EVERY = 50
-EVALUATION_EPISODES = 20
+EVALUATE_EVERY = 100
+EVALUATION_EPISODES = 50
 PROMOTION_SUCCESS = 0.8
 NAVIGATION_SUCCESS = 0.95
-NAVIGATION_EVALUATION_EPISODES = 100
-VALIDATION_VERSION = 2
-VALIDATION_SEED_START = 10_000_000
-VALIDATION_STAGE_STRIDE = 100_000_000
+NAVIGATION_EVALUATION_EPISODES = 50
+VALIDATION_VERSION = 9
+VALIDATION_SEED_START = 10000000
+VALIDATION_STAGE_STRIDE = 100000000
 FAILURE_RETRY_FRACTION = 0.3
 RETRY_EXPLORATION = 0.15
 REHEARSAL_EVERY = 5
-
 
 class TrainingScenarioSampler:
 
     def __init__(self, seed, retry_fraction=FAILURE_RETRY_FRACTION, capacity=128):
         if not np.isfinite(retry_fraction) or not 0 <= retry_fraction <= 1:
-            raise ValueError("failure retry fraction must be between 0 and 1")
+            raise ValueError('failure retry fraction must be between 0 and 1')
         self.rng = random.Random(seed)
         self.retry_fraction = retry_fraction
         self.capacity = capacity
@@ -56,71 +52,72 @@ class TrainingScenarioSampler:
     @staticmethod
     def validate_seed(seed):
         if not 0 <= seed < VALIDATION_SEED_START:
-            raise ValueError(f"Training scenario seeds must be below {VALIDATION_SEED_START}; higher seeds are reserved for validation")
+            raise ValueError(f'Training scenario seeds must be below {VALIDATION_SEED_START}; higher seeds are reserved for validation')
 
     def choose(self, stage, preferred=None):
-        pool = self.pools.setdefault(stage or "manual", {})
+        pool = self.pools.setdefault(stage or 'manual', {})
         if preferred is not None:
             self.validate_seed(preferred)
             self.fresh_episodes += 1
-            return preferred, False, False
+            return (preferred, False, False)
         if pool and self.rng.random() < self.retry_fraction:
-            least_retries = min(item["retries"] for item in pool.values())
-            seed = self.rng.choice([seed for seed, item in pool.items() if item["retries"] == least_retries])
-            pool[seed]["retries"] += 1
+            least_retries = min((item['retries'] for item in pool.values()))
+            seed = self.rng.choice([seed for seed, item in pool.items() if item['retries'] == least_retries])
+            pool[seed]['retries'] += 1
             self.retry_episodes += 1
-            return seed, True, pool[seed]["retries"] % 2 == 0
+            return (seed, True, pool[seed]['retries'] % 2 == 0)
         seed = self.rng.randrange(VALIDATION_SEED_START)
         self.fresh_episodes += 1
-        return seed, False, False
+        return (seed, False, False)
 
     def record(self, stage, seed, *, success, greedy):
         self.validate_seed(seed)
-        pool = self.pools.setdefault(stage or "manual", {})
+        pool = self.pools.setdefault(stage or 'manual', {})
         if not success:
             if seed not in pool:
                 if len(pool) >= self.capacity:
                     pool.pop(next(iter(pool)))
                 pool[seed] = dict(failures=0, retries=0, greedy_successes=0)
-            pool[seed]["failures"] += 1
-            pool[seed]["greedy_successes"] = 0
+            pool[seed]['failures'] += 1
+            pool[seed]['greedy_successes'] = 0
         elif seed in pool and greedy:
-            pool[seed]["greedy_successes"] += 1
-            if pool[seed]["greedy_successes"] >= 2:
+            pool[seed]['greedy_successes'] += 1
+            if pool[seed]['greedy_successes'] >= 2:
                 del pool[seed]
 
     def state(self):
-        return dict(rng_state=self.rng.getstate(),
-                    pools={stage: {seed: dict(item) for seed, item in pool.items()} for stage, pool in self.pools.items()},
-                    fresh_episodes=self.fresh_episodes, retry_episodes=self.retry_episodes)
+        return dict(rng_state=self.rng.getstate(), pools={stage: {seed: dict(item) for seed, item in pool.items()} for stage, pool in self.pools.items()}, fresh_episodes=self.fresh_episodes, retry_episodes=self.retry_episodes)
 
     def restore(self, state):
-        pools = state.get("pools", {})
+        pools = state.get('pools', {})
         for pool in pools.values():
             for seed in pool:
                 self.validate_seed(seed)
         self.pools = {stage: {seed: dict(item) for seed, item in pool.items()} for stage, pool in pools.items()}
-        self.fresh_episodes = state.get("fresh_episodes", 0)
-        self.retry_episodes = state.get("retry_episodes", 0)
-        if "rng_state" in state:
-            self.rng.setstate(state["rng_state"])
+        self.fresh_episodes = state.get('fresh_episodes', 0)
+        self.retry_episodes = state.get('retry_episodes', 0)
+        if 'rng_state' in state:
+            self.rng.setstate(state['rng_state'])
 
+def epsilon_for(total_steps, stage=None, *, stage_episode=None, continuing=False, stage_start_steps=0, start_epsilon=EPSILON_START, decay_steps=None):
+    decay_steps = decay_steps if decay_steps is not None else EPSILON_STAGE_DECAY_STEPS.get(stage, EPSILON_DECAY_STEPS)
+    progress = min(max(total_steps - stage_start_steps, 0) / decay_steps, 1.0)
+    end_epsilon = EPSILON_STAGE_ENDS.get(stage, EPSILON_END)
+    return start_epsilon + progress * (end_epsilon - start_epsilon)
 
-def epsilon_for(total_steps, stage=None, *, stage_episode=None, continuing=False):
-    if stage_episode is not None:
-        start = 0.1 if continuing else 0.4 if stage in (None, "basic") else 0.25
-        progress = min(stage_episode / EPSILON_STAGE_EPISODES, 1.0)
-        return start + progress * (EPSILON_END - start)
-    progress = min(total_steps / EPSILON_DECAY_STEPS, 1.0)
-    return EPSILON_START + progress * (EPSILON_END - EPSILON_START)
-
-
-def next_stage(stage, success_rate, threshold=PROMOTION_SUCCESS):
-    index = CURRICULUM_STAGES.index(stage)
-    if success_rate >= threshold and index < len(CURRICULUM_STAGES) - 1:
-        return CURRICULUM_STAGES[index + 1]
+def navigation_lesson(stage, rng):
+    if stage == 'obstacles':
+        return 'basic' if rng.random() < 0.1 else 'obstacles'
+    if stage == 'big':
+        draw = rng.random()
+        return 'basic' if draw < 0.15 else 'obstacles' if draw < 0.5 else 'big'
     return stage
 
+def next_stage(stage, success_rate, threshold=PROMOTION_SUCCESS, *, stages=NAVIGATION_STAGES):
+    index = stages.index(stage)
+    if success_rate >= threshold and index < len(stages) - 1:
+        return stages[index + 1]
+    return stage
 
 @contextmanager
 def preserve_random_state():
@@ -134,190 +131,116 @@ def preserve_random_state():
         np.random.set_state(numpy_state)
         torch.random.set_rng_state(torch_state)
 
-
-def evaluate(training_env, stage, *, episodes=EVALUATION_EPISODES, observer=None, should_stop=None,
-             scenario_seed=None, seed_offset=0, include_regression=True, suite_label=None):
+def evaluate(training_env, stage, *, episodes=EVALUATION_EPISODES, observer=None, should_stop=None, scenario_seed=None, seed_offset=0, include_regression=True, suite_label=None, solo_mode=None):
     outcomes = []
     stopped = False
     with preserve_random_state():
-        env = DroneNavigationEnv(
-            max_episode_steps=training_env.fixed_episode_steps,
-            layout_mode=training_env.layout_mode, training=False,
-            path_only=training_env.path_only,
-            path_following=training_env.controller.path_following,
-        )
+        env = DroneNavigationEnv(max_episode_steps=training_env.fixed_episode_steps, layout_mode=training_env.layout_mode, training=False, path_only=training_env.path_only if solo_mode is None else solo_mode)
         try:
             env.controller.policy_network.load_state_dict(training_env.controller.policy_network.state_dict())
             env.controller.epsilon = 0.0
             env.controller.max_training_q = training_env.controller.max_training_q
-            env.evaluation_suite = suite_label or ("fixed" if scenario_seed is not None else "varied")
+            env.evaluation_suite = suite_label or ('fixed' if scenario_seed is not None else 'varied')
             env.evacuee_controller.q_table = training_env.evacuee_controller.q_table.copy()
             for trial in range(episodes):
                 regression_trials = min(20, episodes // 5) if training_env.path_only and include_regression else 0
                 offset = 0 if trial < regression_trials else seed_offset
-                trial_seed = (scenario_seed if scenario_seed is not None else
-                              VALIDATION_SEED_START + CURRICULUM_STAGES.index(stage) * VALIDATION_STAGE_STRIDE + offset + trial)
+                trial_seed = scenario_seed if scenario_seed is not None else VALIDATION_SEED_START + (NAVIGATION_STAGES if env.path_only else NAVIGATION_STAGES).index(stage) * VALIDATION_STAGE_STRIDE + offset + trial
                 random.seed(trial_seed)
                 np.random.seed(trial_seed)
                 torch.manual_seed(trial_seed)
-                observation, _ = env.reset(seed=trial_seed, options={"curriculum_stage": stage})
+                observation, _ = env.reset(seed=trial_seed, options={'curriculum_stage': stage})
                 total_reward = 0.0
                 pacing = stationary = 0
+                retention_cost = 0.0
+                retention_moves = 0
                 while True:
                     if should_stop is not None and should_stop():
                         stopped = True
                         break
                     observation, reward, terminated, truncated, info = env.step(env.select_action(observation))
                     total_reward += reward
-                    pacing += info["oscillation"]
-                    stationary += info["stationary"]
-                    callback = getattr(observer, "on_evaluation_step", None)
+                    retention_cost += info['reward_components'].get('nearby_people', 0.0)
+                    retention_moves += not info['stationary']
+                    pacing += info['oscillation']
+                    stationary += info['stationary']
+                    callback = getattr(observer, 'on_evaluation_step', None)
                     stopped = callback is not None and callback(env, trial + 1, episodes, total_reward, info) is False
                     if terminated or truncated or stopped:
                         break
                 if stopped:
                     break
-                outcomes.append((float(info["success"]), info["evacuation_rate"], env.step_count,
-                                 pacing / env.step_count, stationary / env.step_count))
+                outcomes.append((float(info['success']), info['evacuation_rate'], env.step_count, pacing / env.step_count, stationary / env.step_count, retention_cost / max(1, retention_moves)))
         finally:
             env.close()
     count = len(outcomes)
     successful_steps = [item[2] for item in outcomes if item[0]]
     successful = [item for item in outcomes if item[0]]
-    return {
-        "stage": stage, "trials": count, "stopped": stopped,
-        "suite": "fixed" if scenario_seed is not None else "varied",
-        "success_rate": sum(item[0] for item in outcomes) / count if count else 0.0,
-        "evacuation_rate": sum(item[1] for item in outcomes) / count if count else 0.0,
-        "mean_steps": sum(item[2] for item in outcomes) / count if count else 0.0,
-        "mean_success_steps": sum(successful_steps) / len(successful_steps) if successful_steps else None,
-        "mean_pacing": sum(item[3] for item in outcomes) / count if count else 0.0,
-        "mean_stationary": sum(item[4] for item in outcomes) / count if count else 0.0,
-        "mean_success_pacing": sum(item[3] for item in successful) / len(successful) if successful else None,
-        "mean_success_stationary": sum(item[4] for item in successful) / len(successful) if successful else None,
-    }
-
-
-def combine_evaluations(regression, fresh):
-    trials = regression["trials"] + fresh["trials"]
-    result = dict(stage=regression["stage"], suite="varied", trials=trials,
-                  stopped=regression["stopped"] or fresh["stopped"],
-                  qualification_rate=min(regression["success_rate"], fresh["success_rate"]),
-                  regression=regression, fresh=fresh)
-    for metric in ("success_rate", "evacuation_rate", "mean_steps", "mean_pacing", "mean_stationary"):
-        result[metric] = sum(item.get(metric, 0) * item["trials"] for item in (regression, fresh)) / trials if trials else 0.0
-    for metric in ("mean_success_steps", "mean_success_pacing", "mean_success_stationary"):
-        available = [item for item in (regression, fresh) if item.get(metric) is not None]
-        successes = sum(item["success_rate"] * item["trials"] for item in available)
-        result[metric] = (sum(item[metric] * item["success_rate"] * item["trials"] for item in available)
-                          / successes if successes else None)
-    return result
-
+    return {'stage': stage, 'trials': count, 'stopped': stopped, 'suite': 'fixed' if scenario_seed is not None else 'varied', 'success_rate': sum((item[0] for item in outcomes)) / count if count else 0.0, 'mean_retention_penalty': sum((item[5] for item in outcomes)) / count if count else 0.0, 'evacuation_rate': sum((item[1] for item in outcomes)) / count if count else 0.0, 'mean_steps': sum((item[2] for item in outcomes)) / count if count else 0.0, 'mean_success_steps': sum(successful_steps) / len(successful_steps) if successful_steps else None, 'mean_pacing': sum((item[3] for item in outcomes)) / count if count else 0.0, 'mean_stationary': sum((item[4] for item in outcomes)) / count if count else 0.0, 'mean_success_pacing': sum((item[3] for item in successful)) / len(successful) if successful else None, 'mean_success_stationary': sum((item[4] for item in successful)) / len(successful) if successful else None}
 
 def save_checkpoint(controller, path, metadata=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
+    temporary = path.with_name(path.name + '.tmp')
     controller.save(temporary)
     if metadata is not None:
-        checkpoint = torch.load(temporary, map_location="cpu", weights_only=True)
-        checkpoint["training"] = metadata
-        checkpoint["optimizer_state_dict"] = controller.optimizer.state_dict() if controller.optimizer else None
+        checkpoint = torch.load(temporary, map_location='cpu', weights_only=True)
+        checkpoint['training'] = metadata
+        checkpoint['optimizer_state_dict'] = controller.optimizer.state_dict() if controller.optimizer else None
         if controller.target_network is not None:
-            checkpoint["target_state_dict"] = controller.target_network.state_dict()
+            checkpoint['target_state_dict'] = controller.target_network.state_dict()
         torch.save(checkpoint, temporary)
     os.replace(temporary, path)
-
 
 def write_status(directory, **status):
     if directory is None:
         return
-    status["updated_at"] = datetime.now(timezone.utc).isoformat()
-    temporary = directory / "status.json.tmp"
-    temporary.write_text(json.dumps(status, indent=2) + "\n")
-    os.replace(temporary, directory / "status.json")
-
-
-def check_evacuee_following(q_table):
-    from controls.action import Action
-    from controls.evacuee_rl import QLearningFollowController
-    from entities.drone import Drone
-    from entities.evacuee import Evacuee
-    from grids.map_grid import Map_Grid
-    from map.cell import CellType
-    from simulation import Simulation
-    from training.scenario import reset_simulation
-
-    passed = 0
-    with preserve_random_state():
-        random.seed(12345)
-        simulation = Simulation()
-        grid = Map_Grid(41, 41, CellType.EMPTY)
-        grid.set(40, 40, CellType.EXIT)
-        simulation.grid_world.add_floor_from_map(grid)
-        controller = QLearningFollowController()
-        controller.q_table = q_table.copy()
-        for dx, dy in ((1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)):
-            reset_simulation(simulation)
-            controller.reset()
-            drone = Drone(20 + 5 * dx, 20 + 5 * dy, drone_id=0)
-            person = Evacuee(20, 20, assigned_drone_id=0)
-            simulation.drones.append(drone)
-            simulation.evacuees.append(person)
-            simulation.grid_world.add_drone(drone)
-            simulation.grid_world.add_evacuee(person)
-            simulation.started = True
-            for _ in range(32):
-                simulation.step(controller.get_actions(simulation), [Action.STAY])
-            passed += abs(person.grid_x - drone.grid_x) + abs(person.grid_y - drone.grid_y) <= 2
-    return passed
-
+    status['updated_at'] = datetime.now(timezone.utc).isoformat()
+    temporary = directory / 'status.json.tmp'
+    temporary.write_text(json.dumps(status, indent=2) + '\n')
+    os.replace(temporary, directory / 'status.json')
 
 def report_lines(episode, stage, recent, epsilon):
     count = len(recent)
-    mean = lambda key: sum(item[key] for item in recent) / count
-    summary = (
-        f"episode {episode:5d}  stage {stage or 'manual'}  reward {mean('reward'):8.2f}  "
-        f"success {mean('success'):6.1%}  evacuated {mean('evacuation_rate'):6.1%}  "
-        f"steps {mean('steps'):6.1f}  timeout {mean('timeout'):6.1%}  epsilon {epsilon:.3f}"
-    )
-    components = {
-        key: sum(item["components"][key] for item in recent) / count
-        for key in recent[0]["components"]
-    }
-    details = "  mean reward: " + "  ".join(f"{key} {value:+.2f}" for key, value in components.items())
-    details += (f" | stay {mean('stay_rate'):.1%}  stationary {mean('stationary_rate'):.1%}"
-                f"  pacing (A-B-A) {mean('oscillation_rate'):.1%}")
-    return summary, details
+    mean = lambda key: sum((item[key] for item in recent)) / count
+    summary = f"episode {episode:5d}  stage {stage or 'manual'}  reward {mean('reward'):8.2f}  success {mean('success'):6.1%}  evacuated {mean('evacuation_rate'):6.1%}  steps {mean('steps'):6.1f}  timeout {mean('timeout'):6.1%}  epsilon {epsilon:.3f}"
+    components = {key: sum((item['components'][key] for item in recent)) / count for key in recent[0]['components']}
+    details = '  mean reward: ' + '  '.join((f'{key} {value:+.2f}' for key, value in components.items()))
+    details += f" | stay {mean('stay_rate'):.1%}  stationary {mean('stationary_rate'):.1%}  pacing (A-B-A) {mean('oscillation_rate'):.1%}"
+    return (summary, details)
 
-
-def train(seed=0, *, episodes=EPISODES, max_episode_steps=MAX_EPISODE_STEPS,
-          model_path=drone_model_path, layout_mode="curriculum", observer=None,
-          evaluate_every=EVALUATE_EVERY, evaluation_episodes=EVALUATION_EPISODES,
-          resume_from=None, max_seconds=None, run_dir=None, save_every_seconds=300,
-          stop_file=None, path_only=False, max_training_q=None, stop_after_stage=None,
-          target_sync_steps=None, fixed_route_seed=None, init_weights=None,
-          failure_retry_fraction=None, path_following=False):
-    if (episodes is not None and episodes < 1) or evaluate_every < 1 or evaluation_episodes < 1:
-        raise ValueError("Episode and evaluation counts must be at least 1")
+def train(seed=0, *, episodes=EPISODES, max_episode_steps=MAX_EPISODE_STEPS, model_path=None, layout_mode='curriculum', observer=None, evaluate_every=EVALUATE_EVERY, evaluation_episodes=EVALUATION_EPISODES, resume_from=None, max_seconds=None, run_dir=None, save_every_seconds=300, stop_file=None, path_only=True, max_training_q=None, stop_after_stage=None, target_sync_steps=None, fixed_route_seed=None, init_weights=None, failure_retry_fraction=None, start_stage=None, epsilon_start=None, epsilon_decay_steps=None):
+    if not path_only:
+        raise ValueError('This trainer supports solo drone navigation only')
+    if epsilon_start is not None and (not np.isfinite(epsilon_start) or not 0 <= epsilon_start <= 1):
+        raise ValueError('epsilon-start must be between 0 and 1')
+    if epsilon_decay_steps is not None and epsilon_decay_steps < 1:
+        raise ValueError('epsilon-decay-steps must be positive')
+    curriculum_stages = NAVIGATION_STAGES
+    if model_path is None:
+        model_path = drone_model_path
+    if episodes is not None and episodes < 1 or evaluate_every < 1 or evaluation_episodes < 1:
+        raise ValueError('Episode and evaluation counts must be at least 1')
     if max_episode_steps is not None and max_episode_steps < 1:
-        raise ValueError("The episode limit must be at least 1")
+        raise ValueError('The episode limit must be at least 1')
     if max_seconds is not None and max_seconds <= 0:
-        raise ValueError("The time budget must be positive")
+        raise ValueError('The time budget must be positive')
     if episodes is None and max_seconds is None:
-        raise ValueError("Set an episode count or a time budget")
-    if stop_after_stage is not None and stop_after_stage not in CURRICULUM_STAGES:
-        raise ValueError("Unknown final curriculum stage")
+        raise ValueError('Set an episode count or a time budget')
+    if stop_after_stage is not None and stop_after_stage not in curriculum_stages:
+        raise ValueError('Unknown final curriculum stage')
+    if start_stage is not None and (start_stage not in curriculum_stages or layout_mode != 'curriculum'):
+        raise ValueError('Start stage requires a valid curriculum stage and --layout curriculum')
+    if start_stage is not None and resume_from is not None:
+        raise ValueError('Use --start-stage for a new run; resumed runs retain their saved stage')
     if path_only and Path(model_path).resolve() == Path(drone_model_path).resolve():
-        raise ValueError("Choose a separate --output checkpoint for the path-only experiment")
+        raise ValueError('Choose a separate --output checkpoint for this drone mode')
     if target_sync_steps is not None and target_sync_steps < 1:
-        raise ValueError("Target sync interval must be positive")
+        raise ValueError('Target sync interval must be positive')
     if max_training_q is not None and (not np.isfinite(max_training_q) or max_training_q <= 0):
-        raise ValueError("The Q-value limit must be positive and finite")
+        raise ValueError('The Q-value limit must be positive and finite')
     if resume_from is not None and init_weights is not None:
-        raise ValueError("Choose either resume or weights-only initialization")
-    if path_following and not path_only:
-        raise ValueError("Path-following rewards require --path-only")
+        raise ValueError('Choose either resume or weights-only initialization')
     sampler = TrainingScenarioSampler(seed, retry_fraction=FAILURE_RETRY_FRACTION if failure_retry_fraction is None else failure_retry_fraction)
     if path_only:
         sampler.validate_seed(seed)
@@ -332,22 +255,36 @@ def train(seed=0, *, episodes=EPISODES, max_episode_steps=MAX_EPISODE_STEPS,
     directory = Path(run_dir) if run_dir is not None else None
     if directory is not None:
         directory.mkdir(parents=True, exist_ok=True)
-    latest_path = directory / "latest.pt" if directory is not None else model_path
-    stop_path = Path(stop_file) if stop_file else directory / "STOP" if directory else None
-    curriculum = layout_mode == "curriculum"
-    stage = CURRICULUM_STAGES[0] if curriculum else None
-    navigation_phase = "fixed" if path_only and curriculum else None
+    latest_path = directory / 'latest.pt' if directory is not None else model_path
+    stop_path = Path(stop_file) if stop_file else directory / 'STOP' if directory else None
+    curriculum = layout_mode == 'curriculum'
+    if path_only and curriculum and (stop_after_stage is None):
+        stop_after_stage = curriculum_stages[-1]
+    stage = start_stage or curriculum_stages[0] if curriculum else None
+    navigation_phase = 'varied' if path_only and curriculum else None
     fixed_seed = seed if fixed_route_seed is None else fixed_route_seed
     qualification_success = NAVIGATION_SUCCESS if path_only else PROMOTION_SUCCESS
-    env = DroneNavigationEnv(max_episode_steps=max_episode_steps,
-                             layout_mode="mixed" if curriculum else layout_mode,
-                             path_only=path_only, path_following=path_following)
+    default_evaluation = (evaluate_every, evaluation_episodes, qualification_success)
+
+    def configure_stage_evaluation():
+        nonlocal evaluate_every, evaluation_episodes, qualification_success
+        if path_only and stage == 'basic':
+            evaluate_every, evaluation_episodes, qualification_success = (150, 100, 0.99)
+        else:
+            evaluate_every, evaluation_episodes, qualification_success = default_evaluation
+    configure_stage_evaluation()
+    validation_version = VALIDATION_VERSION
+    env = DroneNavigationEnv(max_episode_steps=max_episode_steps, layout_mode='mixed' if curriculum else layout_mode, path_only=path_only)
     controller = env.controller
+    controller.balanced_replay = False
     if max_training_q is not None:
         controller.max_training_q = max_training_q
     if target_sync_steps is not None:
         controller.target_sync_steps = target_sync_steps
+    epsilon_overrides = {}
     total_steps = 0
+    stage_start_steps = 0
+    stage_start_epsilon = EPSILON_STAGE_STARTS.get(stage, EPSILON_START)
     stage_episodes = 0
     previous_episodes = 0
     completed_episodes = 0
@@ -356,63 +293,34 @@ def train(seed=0, *, episodes=EPISODES, max_episode_steps=MAX_EPISODE_STEPS,
     recent = deque(maxlen=100)
     best_scores = {}
     validation_round = 0
+    last_evaluation_episode = None
     last_evaluation = None
     last_save = time.monotonic()
-    stop_reason = "episode limit"
+    stop_reason = 'episode limit'
     failure = None
     qualification_reached = False
 
     def emit(lines):
         if observer is None:
-            print("\n".join(lines), flush=True)
-        elif getattr(observer, "on_report", None):
+            print('\n'.join(lines), flush=True)
+        elif getattr(observer, 'on_report', None):
             observer.on_report(lines)
 
     def requested_stop():
         if deadline is not None and time.monotonic() >= deadline:
-            return "time limit"
+            return 'time limit'
         if stop_path is not None and stop_path.exists():
-            return "stop file"
+            return 'stop file'
         return None
 
-    def metadata():
-        return dict(stage=stage, stage_episodes=stage_episodes, total_steps=total_steps,
-                    episodes_completed=previous_episodes + completed_episodes,
-                    continuing_stage=continuing_stage, best_scores=best_scores,
-                    training_steps=controller.training_steps, replay_saved=False, path_only=path_only,
-                    target_sync_steps=controller.target_sync_steps, navigation_phase=navigation_phase,
-                    n_step=controller.n_step,
-                    discount=controller.discount,
-                    learning_objective=controller.learning_objective,
-                    validation_version=VALIDATION_VERSION, validation_round=validation_round,
-                    rehearsal_episodes=rehearsal_episodes,
-                    scenario_sampler=sampler.state(), failure_retry_fraction=sampler.retry_fraction,
-                    resumed_from=str(resume_from) if resume_from is not None else None,
-                    fixed_route_seed=fixed_seed)
+    def stage_decay():
+        return epsilon_overrides.get(stage, {}).get('decay_steps', EPSILON_STAGE_DECAY_STEPS.get(stage, EPSILON_DECAY_STEPS))
 
-    def status(state="running"):
-        write_status(directory, state=state, stage=stage, stage_episodes=stage_episodes,
-                     path_only=path_only, loss=controller.last_loss,
-                     navigation_phase=navigation_phase, fixed_route_seed=fixed_seed,
-                     qualification_success=qualification_success,
-                     successful_replay_size=len(controller.successful_replay),
-                     reward_version=controller.reward_version, n_step=controller.n_step,
-                     discount=controller.discount,
-                     learning_objective=controller.learning_objective,
-                     validation_version=VALIDATION_VERSION, validation_round=validation_round,
-                     rehearsal_episodes=rehearsal_episodes,
-                     failure_retry_fraction=sampler.retry_fraction,
-                     failed_training_scenarios=len(sampler.pools.get(stage or "manual", {})),
-                     retry_episodes=sampler.retry_episodes, fresh_episodes=sampler.fresh_episodes,
-                     resumed_from=str(resume_from) if resume_from is not None else None,
-                     q_abs_max=controller.last_q_abs_max, target_abs_max=controller.last_target_abs_max,
-                     episodes_completed=previous_episodes + completed_episodes,
-                     steps=total_steps, elapsed_seconds=time.monotonic() - started_at,
-                     remaining_seconds=max(0, deadline - time.monotonic()) if deadline else None,
-                     epsilon=controller.epsilon, best_scores=best_scores,
-                     last_evaluation=last_evaluation, latest_checkpoint=str(latest_path),
-                     best_model=str(model_path), stop_reason=stop_reason if state != "running" else None,
-                     error=str(failure) if failure else None)
+    def metadata():
+        return dict(epsilon_overrides=epsilon_overrides, stage=stage, stage_episodes=stage_episodes, total_steps=total_steps, stage_start_steps=stage_start_steps, stage_start_epsilon=stage_start_epsilon, epsilon_decay_steps=stage_decay(), episodes_completed=previous_episodes + completed_episodes, continuing_stage=continuing_stage, best_scores=best_scores, training_steps=controller.training_steps, replay_saved=False, path_only=path_only, target_sync_steps=controller.target_sync_steps, navigation_phase=navigation_phase, n_step=controller.n_step, discount=controller.discount, learning_objective=controller.learning_objective, validation_version=validation_version, validation_round=validation_round, last_evaluation_episode=last_evaluation_episode, last_evaluation=None, rehearsal_episodes=rehearsal_episodes, scenario_sampler=sampler.state(), failure_retry_fraction=sampler.retry_fraction, resumed_from=str(resume_from) if resume_from is not None else None, fixed_route_seed=fixed_seed)
+
+    def status(state='running'):
+        write_status(directory, state=state, stage=stage, stage_episodes=stage_episodes, stage_start_steps=stage_start_steps, stage_start_epsilon=stage_start_epsilon, epsilon_decay_steps=stage_decay(), stage_steps=total_steps - stage_start_steps, path_only=path_only, loss=controller.last_loss, navigation_phase=navigation_phase, fixed_route_seed=fixed_seed, qualification_success=qualification_success, reward_version=controller.reward_version, n_step=controller.n_step, discount=controller.discount, learning_objective=controller.learning_objective, validation_version=validation_version, validation_round=validation_round, evaluate_every=evaluate_every, evaluation_episodes=evaluation_episodes, rehearsal_episodes=rehearsal_episodes, failure_retry_fraction=sampler.retry_fraction, failed_training_scenarios=len(sampler.pools.get(stage or 'manual', {})), retry_episodes=sampler.retry_episodes, fresh_episodes=sampler.fresh_episodes, resumed_from=str(resume_from) if resume_from is not None else None, q_abs_max=controller.last_q_abs_max, target_abs_max=controller.last_target_abs_max, episodes_completed=previous_episodes + completed_episodes, steps=total_steps, elapsed_seconds=time.monotonic() - started_at, remaining_seconds=max(0, deadline - time.monotonic()) if deadline else None, epsilon=controller.epsilon, best_scores=best_scores, last_evaluation=last_evaluation, latest_checkpoint=str(latest_path), best_model=str(model_path), stop_reason=stop_reason if state != 'running' else None, error=str(failure) if failure else None)
 
     def checkpoint():
         nonlocal last_save
@@ -423,195 +331,168 @@ def train(seed=0, *, episodes=EPISODES, max_episode_steps=MAX_EPISODE_STEPS,
     def record_evaluation(result):
         nonlocal last_evaluation
         last_evaluation = result
-        key = f"fixed_{stage}" if result.get("suite") == "fixed" else stage or "manual"
-        successful_time = result.get("mean_success_steps", result["mean_steps"])
-        score = ((result["qualification_rate"], result["regression"]["success_rate"], -(successful_time or 0))
-                 if "qualification_rate" in result else
-                 (result["success_rate"], -(successful_time or 0), result["evacuation_rate"]))
-        if not result["stopped"] and score > tuple(best_scores.get(key, (-1, -1, -float("inf")))):
+        key = f'fixed_{stage}' if result.get('suite') == 'fixed' else (stage or 'manual')
+        successful_time = result.get('mean_success_steps', result['mean_steps'])
+        score = (result['qualification_rate'], result['regression']['success_rate'], -(successful_time or 0)) if 'qualification_rate' in result else (result['success_rate'], -(successful_time or 0), result['evacuation_rate'])
+        if not result['stopped'] and (score > tuple(best_scores.get(key, (-1, -1, -float('inf'))))):
             best_scores[key] = list(score)
             if directory is not None:
-                save_checkpoint(controller, directory / f"best_{key}.pt", metadata())
+                save_checkpoint(controller, directory / f'best_{key}.pt', metadata())
             save_checkpoint(controller, model_path, metadata())
-            emit((f"Best {key}: qualifying success {score[0]:.0%}; saved {model_path}",))
+            emit((f'Best {key}: qualifying success {score[0]:.0%}; saved {model_path}',))
 
     def run_evaluation():
-        nonlocal validation_round
-        fixed = navigation_phase == "fixed"
-        count = 1 if fixed else max(NAVIGATION_EVALUATION_EPISODES, evaluation_episodes) if path_only else evaluation_episodes
-        if path_only and not fixed:
-            validation_round += 1
-            emit((f"Evaluating {stage}: {count} fixed regression cases, then {count} fresh greedy cases...",))
-            regression = dict(evaluate(env, stage, episodes=count, observer=observer,
-                                      should_stop=requested_stop, seed_offset=0,
-                                      include_regression=False, suite_label="regression"))
-            if regression["stopped"]:
-                record_evaluation(regression)
-                return regression
-            fresh = dict(evaluate(env, stage, episodes=count, observer=observer,
-                                 should_stop=requested_stop, seed_offset=1_000_000 + validation_round * count,
-                                 include_regression=False, suite_label="fresh"))
-            result = combine_evaluations(regression, fresh)
-            record_evaluation(result)
-            emit((f"  Fixed regression {regression['success_rate']:.0%}; fresh {fresh['success_rate']:.0%}; "
-                  f"both must reach {qualification_success:.0%}.",))
-            return result
-        label = "fixed route" if fixed else "fresh cases" if path_only else "fixed cases"
-        emit((f"Evaluating {stage}: {count} greedy {label}...",))
-        result = dict(evaluate(env, stage, episodes=count, observer=observer,
-                              should_stop=requested_stop, scenario_seed=fixed_seed if fixed else None,
-                              seed_offset=(stage_episodes // evaluate_every) * NAVIGATION_EVALUATION_EPISODES if path_only and not fixed else 0))
-        result["suite"] = "fixed" if fixed else "varied"
+        nonlocal validation_round, last_evaluation_episode
+        count = evaluation_episodes
+        emit((f'Evaluating {stage}: {count} fresh greedy cases...',))
+        result = dict(evaluate(env, stage, episodes=count, observer=observer, should_stop=requested_stop, seed_offset=stage_episodes // evaluate_every * count, include_regression=False))
+        result['suite'] = 'varied'
         record_evaluation(result)
         return result
 
+    def stage_passed(result):
+        return not result['stopped'] and result['trials'] == evaluation_episodes and (result.get('qualification_rate', result['success_rate']) >= qualification_success)
     try:
         if init_weights is not None:
             if not controller.load(init_weights):
-                raise ValueError(f"Cannot load compatible drone weights from {init_weights}")
-            initialized = torch.load(init_weights, map_location="cpu", weights_only=True)
-            if initialized.get("reward_version") not in (REWARD_VERSION, PATH_FOLLOWING_REWARD_VERSION):
-                raise ValueError("This checkpoint uses the old reward scheme; train fresh weights")
-            emit((f"Initialized weights from {init_weights}; optimizer, replay and curriculum start fresh.",))
+                raise ValueError(f'Cannot load compatible drone weights from {init_weights}')
+            emit((f'Initialized weights from {init_weights}; optimizer, replay and curriculum start fresh.',))
         if resume_from is not None:
             if not controller.load(resume_from):
-                raise ValueError(f"Cannot load compatible drone weights from {resume_from}")
-            saved = torch.load(resume_from, map_location="cpu", weights_only=True)
-            if saved.get("learning_objective", "mission") != controller.learning_objective:
-                raise ValueError("Checkpoint learning objective differs; match --path-following or use --init-weights to start a fresh learner")
-            if saved.get("reward_version") not in (REWARD_VERSION, PATH_FOLLOWING_REWARD_VERSION):
-                raise ValueError("This checkpoint uses the old reward scheme; train fresh weights")
-            if saved.get("reward_version") != controller.reward_version:
-                raise ValueError("This checkpoint uses a different reward scheme; use --init-weights for a fresh learner")
-            info = saved.get("training", {})
-            if info and info.get("path_only", False) != path_only:
-                raise ValueError("The resumed checkpoint was trained for a different task")
-            if curriculum and info.get("stage") in CURRICULUM_STAGES:
-                stage = info["stage"]
-            navigation_phase = info.get("navigation_phase", navigation_phase)
+                raise ValueError(f'Cannot load compatible drone weights from {resume_from}')
+            saved = torch.load(resume_from, map_location='cpu', weights_only=True)
+            if saved.get('learning_objective', 'mission') != controller.learning_objective:
+                raise ValueError('Checkpoint learning objective differs; match --path-following or use --init-weights to start a fresh learner')
+            if saved.get('reward_version') not in (NAVIGATION_REWARD_VERSION,):
+                raise ValueError('This checkpoint uses the old reward scheme; train fresh weights')
+            if saved.get('reward_version') != controller.reward_version:
+                raise ValueError('This checkpoint uses a different reward scheme; use --init-weights for a fresh learner')
+            info = saved.get('training', {})
+            epsilon_overrides = info.get('epsilon_overrides', {})
+            if info and info.get('path_only', False) != path_only:
+                raise ValueError('The resumed checkpoint was trained for a different task')
+            saved_n_step = saved.get('n_step', info.get('n_step', controller.n_step))
+            saved_discount = saved.get('discount', info.get('discount', controller.discount))
+            returns_changed = False
+            saved_stage = info.get('stage')
+            if path_only:
+                saved_stage = {'turns': 'obstacles', 'mixed': 'big'}.get(saved_stage, saved_stage)
+            if curriculum and saved_stage in curriculum_stages:
+                stage = saved_stage
+            configure_stage_evaluation()
+            navigation_phase = 'varied' if path_only else info.get('navigation_phase', navigation_phase)
             if fixed_route_seed is None:
-                fixed_seed = info.get("fixed_route_seed", fixed_seed)
-            total_steps = info.get("total_steps", 0)
-            stage_episodes = info.get("stage_episodes", 0)
-            previous_episodes = info.get("episodes_completed", 0)
-            rehearsal_episodes = info.get("rehearsal_episodes", 0)
-            continuing_stage = info.get("continuing_stage", continuing_stage)
-            best_scores = info.get("best_scores", {})
-            if path_only and info.get("validation_version") != VALIDATION_VERSION:
+                fixed_seed = info.get('fixed_route_seed', fixed_seed)
+            total_steps = info.get('total_steps', 0)
+            stage_start_steps = info.get('stage_start_steps', 0)
+            stage_start_epsilon = EPSILON_STAGE_STARTS[stage] if stage in EPSILON_STAGE_STARTS else info.get('stage_start_epsilon', EPSILON_START)
+            stage_start_epsilon = epsilon_overrides.get(stage, {}).get('start', stage_start_epsilon)
+            controller.environment_steps = total_steps
+            stage_episodes = info.get('stage_episodes', 0)
+            if path_only and saved_stage != info.get('stage'):
+                stage_episodes = 0
+            previous_episodes = info.get('episodes_completed', 0)
+            rehearsal_episodes = info.get('rehearsal_episodes', 0)
+            continuing_stage = info.get('continuing_stage', continuing_stage)
+            best_scores = info.get('best_scores', {})
+            if path_only and info.get('validation_version') != validation_version:
                 best_scores = {}
-                emit(("Rechecking the resumed best model with fixed and fresh validation; previous scores used a different validation protocol.",))
-            validation_round = info.get("validation_round", 0)
-            sampler.restore(info.get("scenario_sampler", {}))
+                emit(('Previous curriculum/evaluation scores cleared; qualification uses the next scheduled evaluation.',))
+            else:
+                validation_round = info.get('validation_round', 0)
+            sampler.restore(info.get('scenario_sampler', {}))
             if failure_retry_fraction is None:
-                sampler.retry_fraction = info.get("failure_retry_fraction", sampler.retry_fraction)
+                sampler.retry_fraction = info.get('failure_retry_fraction', sampler.retry_fraction)
             if path_only:
                 sampler.validate_seed(fixed_seed)
-            controller.training_steps = info.get("training_steps", 0)
             if target_sync_steps is None:
-                controller.target_sync_steps = max(controller.target_sync_steps, info.get("target_sync_steps", 0))
-            if saved.get("optimizer_state_dict") is not None:
-                controller.optimizer.load_state_dict(saved["optimizer_state_dict"])
-            if "target_state_dict" in saved:
-                controller.target_network.load_state_dict(saved["target_state_dict"])
-            emit((f"Loaded {resume_from}; continuing {stage or 'manual'} with a fresh replay buffer.",))
+                controller.target_sync_steps = max(controller.target_sync_steps, info.get('target_sync_steps', 0))
+            if returns_changed:
+                best_scores = {}
+                last_evaluation = None
+                last_evaluation_episode = None
+                validation_round = 0
+                emit((f'Loaded {resume_from}; continuing {stage or 'manual'} with a fresh optimizer and replay buffer. Return settings changed from {saved_n_step} steps at discount {saved_discount:g} to {controller.n_step} steps at discount {controller.discount:g}.',))
+            else:
+                controller.training_steps = info.get('training_steps', 0)
+                if saved.get('optimizer_state_dict') is not None:
+                    controller.optimizer.load_state_dict(saved['optimizer_state_dict'])
+                if 'target_state_dict' in saved:
+                    controller.target_network.load_state_dict(saved['target_state_dict'])
+                emit((f'Loaded {resume_from}; continuing {stage or 'manual'} with a fresh replay buffer.',))
+        if epsilon_start is not None or epsilon_decay_steps is not None:
+            override = epsilon_overrides.setdefault(stage, {})
+            if epsilon_start is not None:
+                override['start'] = epsilon_start
+                stage_start_epsilon = epsilon_start
+            if epsilon_decay_steps is not None:
+                override['decay_steps'] = epsilon_decay_steps
+        if stage in epsilon_overrides:
+            emit((f'Epsilon override for {stage}: start {stage_start_epsilon:g}, decay over {stage_decay():,} steps.',))
         if directory is not None:
-            if not (directory / "initial.pt").exists():
-                save_checkpoint(controller, directory / "initial.pt", metadata())
+            if not (directory / 'initial.pt').exists():
+                save_checkpoint(controller, directory / 'initial.pt', metadata())
+        emit((f'Exploration for {stage}: {stage_start_epsilon:g} -> {EPSILON_STAGE_ENDS.get(stage, EPSILON_END):g} over {stage_decay():,} stage steps. Evaluation is greedy.',))
         if path_only:
-            emit(("Task: path following only. One drone, zero evacuees; success requires the assigned exit.",))
-            if path_following:
-                emit(("Path following: +10 per forward cluster, +1 per closer step, -1 per farther step. One-step rewards, discount 0.",))
+            emit(('Training mixes: stage 2 uses 10% basic / 90% obstacles; stage 3 uses 15% basic / 35% obstacles / 50% big. Evaluation tests the active stage.',))
+            emit(('Task: path following only. One drone, zero evacuees; success requires the assigned exit.',))
             if curriculum:
-                emit((f"Each new stage starts with a fixed route; every {REHEARSAL_EVERY}th episode practices an earlier stage.",))
-            emit((f"Varied training: {sampler.retry_fraction:.0%} failure retries when available; "
-                  f"exploratory retries use epsilon >= {RETRY_EXPLORATION:g}. Validation seeds are separate.",))
-            if navigation_phase == "fixed":
-                emit((f"First master one fixed route (seed {fixed_seed}); then qualify on 100 fresh cases at 95% success.",))
-        else:
-            passed = check_evacuee_following(env.evacuee_controller.q_table)
-            emit((f"Fixed evacuee policy: {passed}/8 basic guide directions passed.",))
-        if curriculum and directory is not None:
-            result = run_evaluation()
-            checkpoint()
-            if result["stopped"]:
-                stop_reason = requested_stop() or "observer"
-            elif navigation_phase != "fixed" and result.get("qualification_rate", result["success_rate"]) >= qualification_success:
-                if stop_after_stage == stage:
-                    qualification_reached = True
-                    stop_reason = "target score reached"
-                else:
-                    promoted_stage = next_stage(stage, result.get("qualification_rate", result["success_rate"]), qualification_success)
-                    if promoted_stage != stage:
-                        stage, stage_episodes = promoted_stage, 0
-                        continuing_stage = False
-                        if path_only:
-                            navigation_phase = "fixed"
+                emit(('Single-floor curriculum: basic -> obstacles -> big, with varied maps from the first episode.',))
+            emit((f'Varied training: {sampler.retry_fraction:.0%} failure retries when available. Validation seeds are separate.',))
         if max_seconds is not None:
-            emit((f"Time budget: {max_seconds / 3600:.2f} hours; episode count is unlimited.",))
+            emit((f'Time budget: {max_seconds / 3600:.2f} hours; episode count is unlimited.',))
         if stop_path is not None:
-            emit((f"To stop safely, create {stop_path}",))
+            emit((f'To stop safely, create {stop_path}',))
         status()
-
         for episode in itertools.count():
             if qualification_reached:
                 break
-            if requested_stop() or (episodes is not None and episode >= episodes):
-                stop_reason = requested_stop() or "episode limit"
+            used_episodes = episode
+            if requested_stop() or (episodes is not None and used_episodes >= episodes):
+                stop_reason = requested_stop() or 'episode limit'
                 break
-            if last_evaluation is not None and last_evaluation["stopped"]:
+            if last_evaluation is not None and last_evaluation['stopped']:
                 break
-            if (navigation_phase == "fixed" and last_evaluation is not None
-                    and last_evaluation.get("suite") == "fixed"
-                    and last_evaluation.get("stage", stage) == stage
-                    and last_evaluation["success_rate"] == 1.0):
-                navigation_phase = "varied"
-                stage_episodes = 0
-                recent.clear()
-                emit(("Fixed route passed. Training varied routes; promotion now requires 95/100 greedy successes.",))
-                last_evaluation = None
-            rehearsal = (path_only and curriculum and stage != CURRICULUM_STAGES[0]
-                         and (previous_episodes + completed_episodes + 1) % REHEARSAL_EVERY == 0)
-            lesson_stage = (sampler.rng.choice(CURRICULUM_STAGES[:CURRICULUM_STAGES.index(stage)])
-                            if rehearsal else stage)
-            options = {"curriculum_stage": lesson_stage} if curriculum else None
-            use_sampler = path_only and (rehearsal or navigation_phase != "fixed")
+            lesson_stage = navigation_lesson(stage, sampler.rng) if path_only and curriculum else stage
+            rehearsal = lesson_stage != stage
+            options = {'curriculum_stage': lesson_stage, 'training_stage': stage} if curriculum else None
+            solo_lesson = False
+            scenario_key = 'solo_mixed' if solo_lesson else lesson_stage
+            if solo_lesson:
+                options = dict(options or {}, curriculum_stage='big')
+            use_sampler = path_only
             retry = greedy_retry = False
             if use_sampler:
-                episode_seed, retry, greedy_retry = sampler.choose(
-                    lesson_stage, preferred=seed if episode == 0 and resume_from is None else None)
+                episode_seed, retry, greedy_retry = sampler.choose(scenario_key, preferred=seed if episode == 0 and resume_from is None else None)
             else:
-                episode_seed = fixed_seed if navigation_phase == "fixed" else seed if episode == 0 else None
+                episode_seed = seed if episode == 0 else None
             observation, _ = env.reset(seed=episode_seed, options=options)
-            env.navigation_phase = "rehearsal" if rehearsal else navigation_phase
+            env.navigation_phase = 'rehearsal' if rehearsal else navigation_phase
             env.training_stage = stage
-            env.is_rehearsal = rehearsal
+            env.is_rehearsal = rehearsal or solo_lesson
             env.training_scenario_seed = episode_seed
-            env.scenario_source = "retry" if retry else "fixed" if navigation_phase == "fixed" and not rehearsal else "fresh"
+            env.scenario_source = 'retry' if retry else 'fresh'
             episode_reward = 0.0
             components = {}
             stays = stationary = oscillations = 0
-            greedy_episode = greedy_retry if retry else (stage_episodes + 1) % GREEDY_EPISODE_EVERY == 0
-            scheduled_epsilon = epsilon_for(total_steps, stage, stage_episode=stage_episodes,
-                                            continuing=continuing_stage)
-            controller.epsilon = 0.0 if greedy_episode else scheduled_epsilon
-            if rehearsal:
-                controller.epsilon = min(controller.epsilon, 0.1)
-            if retry and not greedy_episode:
-                controller.epsilon = max(controller.epsilon, RETRY_EXPLORATION)
+            greedy_episode = False
+            scheduled_epsilon = epsilon_for(total_steps, stage, stage_start_steps=stage_start_steps, start_epsilon=stage_start_epsilon, decay_steps=stage_decay())
+            controller.epsilon = scheduled_epsilon
             if observer is not None:
-                observer.on_episode_start(env, episode + 1, episodes)
+                observer.on_episode_start(env, used_episodes + 1, episodes)
             stop_requested = False
-
             while True:
+                scheduled_epsilon = epsilon_for(total_steps, stage, stage_start_steps=stage_start_steps, start_epsilon=stage_start_epsilon, decay_steps=stage_decay())
+                controller.epsilon = scheduled_epsilon
                 action = env.select_action(observation)
                 observation, reward, terminated, truncated, info = env.step(action)
                 episode_reward += reward
                 total_steps += 1
-                for key, value in info["reward_components"].items():
+                for key, value in info['reward_components'].items():
                     components[key] = components.get(key, 0.0) + value
-                stays += info["stay_action"]
-                stationary += info["stationary"]
-                oscillations += info["oscillation"]
+                stays += info['stay_action']
+                stationary += info['stationary']
+                oscillations += info['oscillation']
                 if observer is not None:
                     stop_requested = observer.on_step(env, episode_reward, total_steps, info) is False
                 stop_requested = stop_requested or bool(requested_stop())
@@ -621,158 +502,140 @@ def train(seed=0, *, episodes=EPISODES, max_episode_steps=MAX_EPISODE_STEPS,
                     status()
                 if terminated or truncated or stop_requested:
                     break
-
             completed = terminated or truncated
-            info.update(episode_reward_components=components, greedy_episode=greedy_episode,
-                        stay_rate=stays / env.step_count, stationary_rate=stationary / env.step_count,
-                        oscillation_rate=oscillations / env.step_count)
+            info.update(episode_reward_components=components, greedy_episode=greedy_episode, stay_rate=stays / env.step_count, stationary_rate=stationary / env.step_count, oscillation_rate=oscillations / env.step_count)
             if observer is not None:
                 observer.on_episode_end(env, episode_reward, info, completed)
             if completed:
                 if use_sampler:
-                    sampler.record(lesson_stage, episode_seed, success=bool(info["success"]), greedy=greedy_episode)
+                    sampler.record(scenario_key, episode_seed, success=bool(info['success']), greedy=greedy_episode)
                 completed_episodes += 1
-                if rehearsal:
+                if solo_lesson:
                     rehearsal_episodes += 1
+                    stage_episodes += 1
+                elif rehearsal:
+                    rehearsal_episodes += 1
+                    stage_episodes += 1
                 else:
                     stage_episodes += 1
-                    recent.append(dict(reward=episode_reward, success=float(info["success"]),
-                                       evacuation_rate=info["evacuation_rate"], steps=env.step_count,
-                                       timeout=float(truncated), components=components,
-                                       stay_rate=info["stay_rate"], stationary_rate=info["stationary_rate"],
-                                       oscillation_rate=info["oscillation_rate"], greedy=greedy_episode))
+                    recent.append(dict(reward=episode_reward, success=float(info['success']), evacuation_rate=info['evacuation_rate'], steps=env.step_count, timeout=float(truncated), components=components, stay_rate=info['stay_rate'], stationary_rate=info['stationary_rate'], oscillation_rate=info['oscillation_rate'], greedy=greedy_episode))
             status()
             if recent and (episode + 1) % REPORT_EVERY == 0:
                 lines = report_lines(previous_episodes + completed_episodes, stage, recent, scheduled_epsilon)
                 if path_only:
-                    lines = tuple(line.replace("evacuated", "exit reached") for line in lines)
+                    lines = tuple((line.replace('evacuated', 'exit reached') for line in lines))
                 emit(lines)
                 if controller.last_loss is not None:
-                    emit((f"  DQN loss {controller.last_loss:.4g} | max |Q| {controller.last_q_abs_max:.4g} | "
-                          f"max |target| {controller.last_target_abs_max:.4g}",))
+                    emit((f'  DQN loss {controller.last_loss:.4g} | max |Q| {controller.last_q_abs_max:.4g} | max |target| {controller.last_target_abs_max:.4g}',))
                 if use_sampler:
-                    emit((f"  Failed training maps: {len(sampler.pools.get(stage or 'manual', {}))}; "
-                          f"retry episodes {sampler.retry_episodes}, fresh episodes {sampler.fresh_episodes}.",))
+                    emit((f'  Failed training maps: {len(sampler.pools.get(stage or 'manual', {}))}; retry episodes {sampler.retry_episodes}, fresh episodes {sampler.fresh_episodes}.',))
             if stop_requested:
-                stop_reason = requested_stop() or "observer"
+                stop_reason = requested_stop() or 'observer'
                 break
-            evaluation_interval = min(evaluate_every, 10) if navigation_phase == "fixed" else evaluate_every
-            if curriculum and not rehearsal and stage_episodes % evaluation_interval == 0:
+            evaluation_interval = evaluate_every
+            if curriculum and stage_episodes % evaluation_interval == 0:
                 result = run_evaluation()
-                qualifying_rate = result.get("qualification_rate", result["success_rate"])
-                passed_requested_stage = (not result["stopped"] and navigation_phase != "fixed"
-                                          and stop_after_stage == stage and qualifying_rate >= qualification_success)
-                promoted_stage = stage if result["stopped"] or navigation_phase == "fixed" else next_stage(
-                    stage, qualifying_rate, qualification_success)
-                outcome = "exit reached" if path_only else "evacuated"
-                message = (f"Evaluation {stage}: success {result['success_rate']:.0%}, "
-                           f"{outcome} {result['evacuation_rate']:.0%}, "
-                           f"steps {result['mean_steps']:.1f}, {result['trials']} greedy trials.")
-                if result.get("mean_success_steps") is not None:
+                qualifying_rate = result.get('qualification_rate', result['success_rate'])
+                passed = stage_passed(result)
+                passed_requested_stage = passed and stop_after_stage == stage
+                promoted_stage = next_stage(stage, qualifying_rate, qualification_success, stages=curriculum_stages) if passed else stage
+                outcome = 'exit reached' if path_only else 'evacuated'
+                message = f"Evaluation {stage}: success {result['success_rate']:.0%}, {outcome} {result['evacuation_rate']:.0%}, steps {result['mean_steps']:.1f}, {result['trials']} greedy trials."
+                if result.get('mean_success_steps') is not None:
                     message += f" Successful missions: {result['mean_success_steps']:.1f} steps."
-                if result.get("mean_success_pacing") is not None:
-                    message += (f" Successful-run pacing {result['mean_success_pacing']:.1%}, "
-                                f"stationary {result['mean_success_stationary']:.1%}.")
-                message += (f" Target score reached; stopping at {stage}." if passed_requested_stage else
-                            f" Advancing to {promoted_stage}." if promoted_stage != stage else
-                            " Stopped." if result["stopped"] else " Continuing this stage.")
+                if result.get('mean_success_pacing') is not None:
+                    message += f" Successful-run pacing {result['mean_success_pacing']:.1%}, stationary {result['mean_success_stationary']:.1%}."
+                message += f' Target score reached; stopping at {stage}.' if passed_requested_stage else f' Advancing to {promoted_stage}.' if promoted_stage != stage else ' Stopped.' if result['stopped'] else ' Continuing this stage.'
                 emit((message,))
-                if result["stopped"]:
-                    stop_reason = requested_stop() or "observer"
+                if result['stopped']:
+                    stop_reason = requested_stop() or 'observer'
                     break
                 if passed_requested_stage:
-                    stop_reason = "target score reached"
+                    stop_reason = 'target score reached'
                     if directory is not None:
                         checkpoint()
                     break
                 if promoted_stage != stage:
                     stage = promoted_stage
+                    configure_stage_evaluation()
                     stage_episodes = 0
+                    stage_start_steps = total_steps
+                    stage_start_epsilon = epsilon_overrides.get(stage, {}).get('start', EPSILON_STAGE_STARTS.get(stage, EPSILON_STAGE_START))
+                    controller.epsilon = stage_start_epsilon
                     continuing_stage = False
                     if path_only:
-                        navigation_phase = "fixed"
+                        navigation_phase = 'varied'
                     recent.clear()
                 if directory is not None:
                     checkpoint()
     except KeyboardInterrupt:
-        stop_reason = "interrupted"
-        emit(("\nTraining interrupted; saving current drone weights.",))
+        stop_reason = 'interrupted'
+        emit(('\nTraining interrupted; saving current drone weights.',))
     except Exception as exc:
-        stop_reason = "error"
+        stop_reason = 'error'
         failure = exc
     finally:
         try:
             if failure is None or total_steps > 0:
                 save_checkpoint(controller, latest_path, metadata())
-                emit((f"saved {latest_path}",))
-            status("failed" if failure else "finished")
+                emit((f'saved {latest_path}',))
+            status('failed' if failure else 'finished')
         finally:
             env.close()
     if failure is not None:
         raise failure
 
-
 def interrupt_training(*_):
     raise KeyboardInterrupt
 
-
 def add_training_arguments(parser):
-    parser.add_argument("--path-only", action="store_true", help="one drone, no evacuees; requires a separate --output checkpoint")
-    parser.add_argument("--path-following", action="store_true",
-                        help="path-only pretraining with strong cluster/progress rewards and immediate one-step learning")
-    parser.add_argument("--max-q", type=float, help="stop above this Q magnitude (default: 100)")
-    parser.add_argument("--target-sync-steps", type=int, help="training steps between target network copies (default: 2000)")
-    parser.add_argument("--fixed-route-seed", type=int, help="initial fixed path-only scenario seed (default: training seed)")
-    parser.add_argument("--failure-retry-fraction", type=float,
-                        help="fraction of varied path-only episodes retrying failed training maps (default: 0.3)")
-    parser.add_argument("--stop-after-stage", choices=CURRICULUM_STAGES, help="stop once this stage passes greedy evaluation")
-    parser.add_argument("--episodes", type=int, default=EPISODES)
-    parser.add_argument("--hours", type=float, help="run for this many hours instead of limiting the episode count")
+    parser.add_argument('--path-only', action='store_true', default=True, help='one drone, no evacuees; requires a separate --output checkpoint')
+    parser.add_argument('--max-q', type=float, help='stop above this Q magnitude (default: 100)')
+    parser.add_argument('--target-sync-steps', type=int, help='training steps between target network copies (default: 50)')
+    parser.add_argument('--failure-retry-fraction', type=float, help='fraction of varied path-only episodes retrying failed training maps (default: 0.3)')
+    parser.add_argument('--stop-after-stage', choices=tuple(dict.fromkeys(NAVIGATION_STAGES)), help='stop once this stage passes greedy evaluation')
+    parser.add_argument('--start-stage', choices=tuple(dict.fromkeys(NAVIGATION_STAGES)), help='start a new curriculum run at this stage')
+    parser.add_argument('--epsilon-start', type=float, help='override starting epsilon for the starting/resumed stage only')
+    parser.add_argument('--epsilon-decay-steps', type=int, help='override epsilon decay duration for the starting/resumed stage only')
+    parser.add_argument('--episodes', type=int, default=EPISODES)
+    parser.add_argument('--hours', type=float, help='run for this many hours instead of limiting the episode count')
     initialization = parser.add_mutually_exclusive_group()
-    initialization.add_argument("--resume", nargs="?", const="", help="continue a checkpoint; defaults to the active drone model")
-    initialization.add_argument("--init-weights", help="initialize policy weights only, e.g. to fine-tune a navigation model with evacuees")
-    parser.add_argument("--run-dir", help="directory for latest checkpoint, best model per stage, and live status")
-    parser.add_argument("--threads", type=int, default=2, help="CPU threads used by PyTorch (default: 2)")
-    parser.add_argument("--max-steps", type=int, help="override every lesson's episode budget")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--layout", choices=("curriculum", "mixed", "image", *LAYOUT_KINDS), default="curriculum")
-    parser.add_argument("--output", help="checkpoint destination; defaults to best.pt in the run directory when provided")
-
+    initialization.add_argument('--resume', nargs='?', const='', help='continue a checkpoint; defaults to the active drone model')
+    initialization.add_argument('--init-weights', help='initialize policy weights only, e.g. to fine-tune a navigation model with evacuees')
+    parser.add_argument('--run-dir', help='directory for latest checkpoint, best model per stage, and live status')
+    parser.add_argument('--threads', type=int, default=2, help='CPU threads used by PyTorch (default: 2)')
+    parser.add_argument('--max-steps', type=int, help="override every lesson's episode budget")
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--layout', choices=('curriculum', 'mixed', 'image', *LAYOUT_KINDS), default='curriculum')
+    parser.add_argument('--output', help='checkpoint destination; defaults to best.pt in the run directory when provided')
 
 def training_options(args):
-    if args.path_following and not args.path_only:
-        raise ValueError("path-following requires path-only pretraining")
+    if args.epsilon_start is not None and (not np.isfinite(args.epsilon_start) or not 0 <= args.epsilon_start <= 1):
+        raise ValueError('epsilon-start must be between 0 and 1')
+    if args.epsilon_decay_steps is not None and args.epsilon_decay_steps < 1:
+        raise ValueError('epsilon-decay-steps must be positive')
     if args.episodes < 1 or (args.max_steps is not None and args.max_steps < 1):
-        raise ValueError("episodes and max-steps must be at least 1")
+        raise ValueError('episodes and max-steps must be at least 1')
     if args.hours is not None and args.hours <= 0:
-        raise ValueError("hours must be positive")
+        raise ValueError('hours must be positive')
     if args.threads < 1:
-        raise ValueError("threads must be at least 1")
+        raise ValueError('threads must be at least 1')
     if args.failure_retry_fraction is not None and (not np.isfinite(args.failure_retry_fraction) or not 0 <= args.failure_retry_fraction <= 1):
-        raise ValueError("failure-retry-fraction must be between 0 and 1")
+        raise ValueError('failure-retry-fraction must be between 0 and 1')
     torch.set_num_threads(args.threads)
     torch.set_num_interop_threads(1)
     signal.signal(signal.SIGTERM, interrupt_training)
     directory = args.run_dir
     if directory is None and (args.hours is not None or args.path_only):
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_UTC")
-        directory = str(Path("training_runs") / f"drone_{'path_' if args.path_only else ''}{stamp}")
-    output = args.output or (str(Path(directory) / "best.pt") if directory else drone_model_path)
-    resume = drone_model_path if args.resume == "" else args.resume
-    return dict(seed=args.seed, episodes=None if args.hours is not None else args.episodes,
-                max_episode_steps=args.max_steps, model_path=output,
-                layout_mode=args.layout, resume_from=resume, run_dir=directory,
-                path_only=args.path_only, max_training_q=args.max_q, stop_after_stage=args.stop_after_stage,
-                target_sync_steps=args.target_sync_steps,
-                fixed_route_seed=args.fixed_route_seed,
-                init_weights=args.init_weights,
-                failure_retry_fraction=args.failure_retry_fraction,
-                path_following=args.path_following,
-                max_seconds=args.hours * 3600 if args.hours is not None else None)
-
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_UTC')
+        directory = str(Path('training_runs') / f"drone_{('path_' if args.path_only else '')}{stamp}")
+    default_model = drone_model_path
+    output = args.output or (str(Path(directory) / 'best.pt') if directory else default_model)
+    resume = default_model if args.resume == '' else args.resume
+    return dict(seed=args.seed, episodes=None if args.hours is not None else args.episodes, max_episode_steps=args.max_steps, model_path=output, layout_mode=args.layout, resume_from=resume, run_dir=directory, path_only=args.path_only, max_training_q=args.max_q, stop_after_stage=args.stop_after_stage, target_sync_steps=args.target_sync_steps, init_weights=args.init_weights, failure_retry_fraction=args.failure_retry_fraction, start_stage=args.start_stage, max_seconds=args.hours * 3600 if args.hours is not None else None, epsilon_start=args.epsilon_start, epsilon_decay_steps=args.epsilon_decay_steps)
 
 def main():
-    parser = argparse.ArgumentParser(description='Train drone escorting, advancing from small lessons to complete buildings.')
+    parser = argparse.ArgumentParser(description='Train the current four-frame drone navigation DQN.')
     add_training_arguments(parser)
     args = parser.parse_args()
     try:
@@ -780,7 +643,5 @@ def main():
     except ValueError as exc:
         parser.error(str(exc))
     train(**options)
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
